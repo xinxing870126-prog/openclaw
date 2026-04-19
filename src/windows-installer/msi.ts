@@ -303,7 +303,10 @@ type GitHubReleasePayload = {
 
 function sanitizeId(value: string, prefix: string): string {
   const normalized = value.replace(/[^A-Za-z0-9_.]/g, "_");
-  return `${prefix}${normalized}`.slice(0, 70);
+  const hashSuffix = createHash("sha256").update(value).digest("hex").slice(0, 10).toUpperCase();
+  const maxBaseLength = Math.max(1, 70 - prefix.length - hashSuffix.length - 1);
+  const base = normalized.slice(0, maxBaseLength) || "X";
+  return `${prefix}${base}_${hashSuffix}`;
 }
 
 function xmlEscape(value: string): string {
