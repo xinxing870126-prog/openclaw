@@ -1097,6 +1097,26 @@ function resolveWindowsMsiLogPath(params: {
   return path.join(os.tmpdir(), `${artifactStem}-${params.phase}.log`);
 }
 
+async function readWindowsMsiLogTail(params: {
+  logPath: string;
+  maxLines?: number;
+}): Promise<string | null> {
+  try {
+    const raw = await fs.readFile(params.logPath, "utf8");
+    const normalized = raw.replace(/\r\n/g, "\n").trim();
+    if (!normalized) {
+      return null;
+    }
+    const maxLines = Math.max(1, params.maxLines ?? 80);
+    return normalized
+      .split("\n")
+      .slice(-maxLines)
+      .join("\n");
+  } catch {
+    return null;
+  }
+}
+
 async function runWindowsMsiSmokePhase(params: {
   phase: WindowsMsiSmokePhase;
   artifactPath: string;
@@ -1106,7 +1126,7 @@ async function runWindowsMsiSmokePhase(params: {
   retryAttempts?: number;
   retryDelayMs?: number;
 }): Promise<WindowsMsiSmokePhaseResult> {
-  const env = { ...process.env, ...(params.env ?? {}) };
+  const env = { ...process.env, ...params.env };
   const artifactPath = path.resolve(params.artifactPath);
   const logPath = resolveWindowsMsiLogPath({
     artifactPath,
@@ -1128,8 +1148,10 @@ async function runWindowsMsiSmokePhase(params: {
     },
   );
   if (msiexec.code !== 0) {
+    const logTail = await readWindowsMsiLogTail({ logPath });
     throw new Error(
-      `Windows MSI ${params.phase} failed with code ${String(msiexec.code)}. Log: ${logPath}`,
+      `Windows MSI ${params.phase} failed with code ${String(msiexec.code)}. Log: ${logPath}` +
+        (logTail ? `\n--- MSI log tail ---\n${logTail}` : ""),
     );
   }
 
@@ -1177,8 +1199,10 @@ async function runWindowsMsiSmokePhase(params: {
       await sleep(retryDelayMs);
     }
   }
+  const logTail = await readWindowsMsiLogTail({ logPath });
   throw new Error(
-    `Windows MSI ${params.phase} verification failed. Log: ${logPath}`,
+    `Windows MSI ${params.phase} verification failed. Log: ${logPath}` +
+      (logTail ? `\n--- MSI log tail ---\n${logTail}` : ""),
   );
 }
 
@@ -1190,7 +1214,7 @@ export async function runWindowsPostInstallBootstrap(params: {
   productVersion?: string;
   productName?: string;
 }): Promise<WindowsInstallerBootstrapResult> {
-  const env = { ...process.env, ...(params.env ?? {}) };
+  const env = { ...process.env, ...params.env };
   const companionEnabled = params.companionEnabled !== false;
   const gatewayResult = await runInstalledCliCommand({
     installRoot: params.installRoot,
@@ -1270,7 +1294,7 @@ export async function runWindowsPostInstallBootstrap(params: {
 export async function runWindowsPostUninstallCleanup(params: {
   env?: NodeJS.ProcessEnv;
 } = {}): Promise<WindowsInstallerCleanupResult> {
-  const env = { ...process.env, ...(params.env ?? {}) };
+  const env = { ...process.env, ...params.env };
   const companion = await uninstallWindowsCompanionFromInstaller({
     env,
     stdout: process.stdout,
@@ -1338,7 +1362,7 @@ function createDirectoryTree(entries: WxsFileEntry[]): DirectoryNode {
 
 function renderDirectoryNode(node: DirectoryNode, parentId: string, prefix = ""): string {
   const lines: string[] = [];
-  const childEntries = [...node.children.entries()].sort((left, right) => left[0].localeCompare(right[0]));
+  const childEntries = [...node.children.entries()].toSorted((left, right) => left[0].localeCompare(right[0]));
   for (const [name, child] of childEntries) {
     const dirId = sanitizeId(`${prefix}${name}`, "Dir_");
     lines.push(`${"  ".repeat(prefix.split("/").length + 2)}<Directory Id="${dirId}" Name="${xmlEscape(name)}">`);
@@ -1346,7 +1370,7 @@ function renderDirectoryNode(node: DirectoryNode, parentId: string, prefix = "")
     lines.push(`${"  ".repeat(prefix.split("/").length + 2)}</Directory>`);
   }
   const fileIndent = "  ".repeat(prefix.split("/").length + 2);
-  for (const entry of [...node.files].sort((left, right) => left.relativePath.localeCompare(right.relativePath))) {
+  for (const entry of [...node.files].toSorted((left, right) => left.relativePath.localeCompare(right.relativePath))) {
     const componentId = sanitizeId(entry.relativePath, "Cmp_");
     const fileId = sanitizeId(entry.relativePath, "Fil_");
     lines.push(`${fileIndent}<Component Id="${componentId}" Guid="*">`);
@@ -1406,7 +1430,7 @@ export function renderWindowsMsiSource(params: {
     '    <ComponentGroup Id="MainFeatureComponents">',
     ...params.fileEntries
       .map((entry) => `      <ComponentRef Id="${sanitizeId(entry.relativePath, "Cmp_")}" />`)
-      .sort((left, right) => left.localeCompare(right)),
+      .toSorted((left, right) => left.localeCompare(right)),
     "    </ComponentGroup>",
     "  </Fragment>",
     "</Wix>",
@@ -1515,7 +1539,7 @@ export async function verifyWindowsMsiSignature(params: {
     parsed = JSON.parse(result.stdout) as WindowsAuthenticodeSignaturePayload;
   } catch (error) {
     throw new Error(
-      `Failed to parse Windows MSI signature JSON: ${String(error)}${result.stdout ? `\n${result.stdout}` : ""}`,
+      `Failed to parse Windows MSI signature JSON: ${String(error)}${result.stdout ? `\n${result.stdout}` : ""}`, { cause: error },
     );
   }
   return normalizeWindowsAuthenticodeSignature(parsed, params.expectedSignerSubject);

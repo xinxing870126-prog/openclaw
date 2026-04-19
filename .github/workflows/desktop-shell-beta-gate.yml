@@ -242,14 +242,39 @@ jobs:
 
       - name: Upload Windows MSI install logs on failure
         if: ${{ failure() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/beta/windows-msi-install-logs
+          shopt -s nullglob
+          copied=0
+          for log_path in \
+            "${RUNNER_TEMP}"/OpenClaw-*-install.log \
+            "${RUNNER_TEMP}"/OpenClaw-*-repair.log \
+            "${RUNNER_TEMP}"/OpenClaw-*-uninstall.log
+          do
+            cp "$log_path" artifacts/beta/windows-msi-install-logs/
+            copied=1
+          done
+          if [ "$copied" -eq 0 ]; then
+            echo "No Windows MSI logs found under ${RUNNER_TEMP}."
+            exit 0
+          fi
+          echo "Collected Windows MSI logs:"
+          ls -la artifacts/beta/windows-msi-install-logs
+          for log_path in artifacts/beta/windows-msi-install-logs/*.log; do
+            echo "::group::$(basename "$log_path") tail"
+            tail -n 120 "$log_path" || true
+            echo "::endgroup::"
+          done
+
+      - name: Upload collected Windows MSI install logs on failure
+        if: ${{ failure() }}
         uses: actions/upload-artifact@v7
         with:
           name: windows-msi-install-logs
-          path: |
-            ${{ runner.temp }}/OpenClaw-*-install.log
-            ${{ runner.temp }}/OpenClaw-*-repair.log
-            ${{ runner.temp }}/OpenClaw-*-uninstall.log
-          if-no-files-found: ignore
+          path: artifacts/beta/windows-msi-install-logs
+          if-no-files-found: warn
 
       - name: Validate Windows install verification input
         shell: bash
