@@ -11,13 +11,15 @@ function readArgValue(flag: string): string | null {
 async function main() {
   const mode = process.argv[2]?.trim();
   const installRoot = readArgValue("--install-root");
-  if (!mode || !installRoot) {
-    throw new Error("Usage: bootstrap-runtime.js <install|uninstall> --install-root <path>");
+  const productVersion = readArgValue("--product-version");
+  if (!mode || !installRoot || !productVersion) {
+    throw new Error("Usage: bootstrap-runtime.js <install|uninstall> --install-root <path> --product-version <version>");
   }
 
   if (mode === "install") {
     const result = await runWindowsPostInstallBootstrap({
       installRoot,
+      productVersion,
       env: process.env,
     });
     if (!result.gateway.ok || (result.companion.attempted && !result.companion.ok)) {

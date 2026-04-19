@@ -1378,8 +1378,10 @@ function buildNodePathClause(): string {
 
 export function renderWindowsInstallerBootstrapScript(params: {
   installRoot: string;
+  productVersion: string;
 }): string {
   const installRoot = params.installRoot.replaceAll("'", "''");
+  const productVersion = params.productVersion.replaceAll("'", "''");
   return [
     "param(",
     "  [Parameter(Mandatory = $true)][ValidateSet('install', 'uninstall')]",
@@ -1387,13 +1389,14 @@ export function renderWindowsInstallerBootstrapScript(params: {
     ")",
     "$ErrorActionPreference = 'Stop'",
     `$installRoot = '${installRoot}'`,
+    `$productVersion = '${productVersion}'`,
     "$bootstrapLog = Join-Path ([System.IO.Path]::GetTempPath()) (\"OpenClaw-bootstrap-\" + $Mode + \".log\")",
     "function Write-BootstrapLog([string]$Message) {",
     "  $line = \"[$((Get-Date).ToString('o'))] $Message\"",
     "  Add-Content -Path $bootstrapLog -Value $line -Encoding utf8",
     "  Write-Host $line",
     "}",
-    "Set-Content -Path $bootstrapLog -Value \"[$((Get-Date).ToString('o'))] bootstrap mode=$Mode installRoot=$installRoot\" -Encoding utf8",
+    "Set-Content -Path $bootstrapLog -Value \"[$((Get-Date).ToString('o'))] bootstrap mode=$Mode installRoot=$installRoot productVersion=$productVersion\" -Encoding utf8",
     buildNodePathClause(),
     "$runtime = Join-Path $installRoot 'dist\\windows-installer\\bootstrap-runtime.js'",
     "if (-not (Test-Path $runtime)) {",
@@ -1404,7 +1407,7 @@ export function renderWindowsInstallerBootstrapScript(params: {
     "Write-BootstrapLog \"Using node: $node\"",
     "Write-BootstrapLog \"Using runtime: $runtime\"",
     "try {",
-    "  & $node $runtime $Mode --install-root $installRoot *>&1 | Tee-Object -FilePath $bootstrapLog -Append",
+    "  & $node $runtime $Mode --install-root $installRoot --product-version $productVersion *>&1 | Tee-Object -FilePath $bootstrapLog -Append",
     "  $exitCode = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }",
     "  Write-BootstrapLog \"bootstrap runtime exited with code $exitCode\"",
     "  exit $exitCode",
@@ -2025,7 +2028,7 @@ export async function buildWindowsMsiInstaller(params: {
   await fs.mkdir(path.join(installRoot, "bootstrap"), { recursive: true });
   await fs.writeFile(
     path.join(installRoot, "bootstrap", "msi-bootstrap.ps1"),
-    renderWindowsInstallerBootstrapScript({ installRoot }),
+    renderWindowsInstallerBootstrapScript({ installRoot, productVersion: version }),
     "utf8",
   );
   const fileEntries = await listFilesRecursive(installRoot);
