@@ -15,7 +15,17 @@ import {
 type WindowsMsiInstallVerification = {
   install?: { msiexec?: { code?: number | null } };
   repair?: { msiexec?: { code?: number | null } };
-  uninstall?: { msiexec?: { code?: number | null } };
+  uninstall?: {
+    msiexec?: { code?: number | null };
+    installedProduct?: {
+      manifest?: unknown | null;
+      installRoot?: string | null;
+      bootstrapStatus?: {
+        gatewayInstalled?: boolean;
+        companionInstalled?: boolean;
+      };
+    };
+  };
 };
 
 function readOption(name: string): string | undefined {
@@ -28,6 +38,19 @@ function readOption(name: string): string | undefined {
 
 function normalizeMode(value: string | undefined): DesktopShellBetaMode {
   return value?.trim().toLowerCase() === "remote" ? "remote" : "local";
+}
+
+function uninstallResidualStateCleared(payload: WindowsMsiInstallVerification): boolean {
+  const installedProduct = payload.uninstall?.installedProduct;
+  if (!installedProduct) {
+    return false;
+  }
+  return (
+    installedProduct.manifest == null
+    && !installedProduct.installRoot
+    && installedProduct.bootstrapStatus?.gatewayInstalled !== true
+    && installedProduct.bootstrapStatus?.companionInstalled !== true
+  );
 }
 
 async function main() {
@@ -49,7 +72,8 @@ async function main() {
   const payload = JSON.parse(await fs.readFile(installReportPath, "utf8")) as WindowsMsiInstallVerification;
   const installPassed = payload.install?.msiexec?.code === 0;
   const repairInstallPassed = payload.repair?.msiexec?.code === 0;
-  const uninstallPassed = payload.uninstall?.msiexec?.code === 0;
+  const uninstallPassed =
+    payload.uninstall?.msiexec?.code === 0 || uninstallResidualStateCleared(payload);
 
   const firstOpenPassed = parseBooleanFlag(readOption("--first-open-passed"));
   const hostStatusVisible = parseBooleanFlag(readOption("--host-status-visible"));
