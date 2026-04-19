@@ -235,10 +235,21 @@ jobs:
           mkdir -p artifacts/beta
           node --import tsx scripts/verify-windows-msi-install.ts \
             --artifact-path "$WINDOWS_MSI_PATH" \
-            --timeout-ms 180000 \
+            --timeout-ms 600000 \
             --retry-attempts 15 \
             --retry-delay-ms 2000 > artifacts/beta/windows-msi-install-verification.json
           echo "WINDOWS_INSTALL_REPORT=artifacts/beta/windows-msi-install-verification.json" >> "$GITHUB_ENV"
+
+      - name: Upload Windows MSI install logs on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-msi-install-logs
+          path: |
+            ${{ runner.temp }}/OpenClaw-*-install.log
+            ${{ runner.temp }}/OpenClaw-*-repair.log
+            ${{ runner.temp }}/OpenClaw-*-uninstall.log
+          if-no-files-found: ignore
 
       - name: Validate Windows install verification input
         shell: bash
