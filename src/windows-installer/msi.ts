@@ -14,7 +14,6 @@ import { fetchWithTimeout } from "../utils/fetch-timeout.js";
 import {
   resolveWindowsCompanionInstallerStatus,
   uninstallWindowsCompanionFromInstaller,
-  type WindowsCompanionInstallMode,
   type WindowsCompanionInstallerStatus,
 } from "../windows-companion/installer.js";
 
@@ -45,6 +44,8 @@ const WINDOWS_WINGET_DEFAULT_OUT_DIR = ".artifacts/windows-winget";
 const WINDOWS_WINGET_UPSTREAM_REPO = "microsoft/winget-pkgs";
 const WINDOWS_WINGET_BASE_BRANCH = "master";
 
+type WindowsCompanionInstallModeValue = "schtasks" | "startup_folder";
+
 export type WindowsMsiInstallMode = "msi";
 export type WindowsMsiTimestampStatus = "present" | "missing" | "unknown";
 export type WindowsMsiReleaseChannel = "stable" | "beta" | "dev";
@@ -61,7 +62,7 @@ export type WindowsInstallerManifest = {
   companionEnabled: boolean;
   gatewayBootstrapSucceeded: boolean;
   companionBootstrapSucceeded: boolean;
-  companionInstallMode?: WindowsCompanionInstallMode | null;
+  companionInstallMode?: WindowsCompanionInstallModeValue | null;
   companionSupervisorLabel?: string | null;
   repairHint?: string | null;
 };
@@ -75,7 +76,7 @@ export type WindowsInstallerBootstrapStatus = {
   companionConfigured: boolean;
   companionInstalled: boolean;
   companionRunning: boolean;
-  companionInstallMode: WindowsCompanionInstallMode | null;
+  companionInstallMode: WindowsCompanionInstallModeValue | null;
   companionSupervisorLabel: string | null;
   partialFailure: boolean;
   repairHints: string[];
@@ -146,6 +147,8 @@ export type WindowsInstalledProductStatus = {
   bootstrapStatus: WindowsInstallerBootstrapStatus;
   gatewayStatus: Record<string, unknown> | null;
   companionStatus: Record<string, unknown> | null;
+  gatewayStatusCommand: CliCommandResult | null;
+  companionStatusCommand: CliCommandResult | null;
   gatewayStatusCommandOk: boolean;
   companionStatusCommandOk: boolean;
   companionPresenceDetected: boolean;
@@ -317,6 +320,74 @@ function xmlEscape(value: string): string {
     .replaceAll('"', "&quot;");
 }
 
+function trimMultilineForSummary(value: string, maxLength = 600): string | null {
+  const normalized = value.replaceAll("\u0000", "").trim();
+  if (!normalized) {
+    return null;
+  }
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength)}...`;
+}
+
+function summarizeWindowsInstalledProductStatus(
+  status: WindowsInstalledProductStatus | null,
+): Record<string, unknown> | null {
+  if (!status) {
+    return null;
+  }
+  return {
+    installRoot: status.installRoot,
+    manifestPresent: status.manifest !== null,
+    manifestVersion: status.manifest?.productVersion ?? null,
+    bootstrapStatus: {
+      gatewayInstalled: status.bootstrapStatus.gatewayInstalled,
+      gatewayLoaded: status.bootstrapStatus.gatewayLoaded,
+      gatewayRunning: status.bootstrapStatus.gatewayRunning,
+      companionConfigured: status.bootstrapStatus.companionConfigured,
+      companionInstalled: status.bootstrapStatus.companionInstalled,
+      companionRunning: status.bootstrapStatus.companionRunning,
+      companionInstallMode: status.bootstrapStatus.companionInstallMode,
+      companionSupervisorLabel: status.bootstrapStatus.companionSupervisorLabel,
+      partialFailure: status.bootstrapStatus.partialFailure,
+      repairHints: status.bootstrapStatus.repairHints,
+    },
+    gatewayStatusCommandOk: status.gatewayStatusCommandOk,
+    gatewayStatusCommand: status.gatewayStatusCommand
+      ? {
+          code: status.gatewayStatusCommand.code,
+          stdout: trimMultilineForSummary(status.gatewayStatusCommand.stdout),
+          stderr: trimMultilineForSummary(status.gatewayStatusCommand.stderr),
+        }
+      : null,
+    companionStatusCommandOk: status.companionStatusCommandOk,
+    companionStatusCommand: status.companionStatusCommand
+      ? {
+          code: status.companionStatusCommand.code,
+          stdout: trimMultilineForSummary(status.companionStatusCommand.stdout),
+          stderr: trimMultilineForSummary(status.companionStatusCommand.stderr),
+        }
+      : null,
+    companionPresenceDetected: status.companionPresenceDetected,
+    gatewayStatusSummary:
+      status.gatewayStatus !== null
+        ? {
+            rpc: status.gatewayStatus.rpc ?? null,
+            windowsCompanion: status.gatewayStatus.windowsCompanion ?? null,
+          }
+        : null,
+    companionStatusSummary:
+      status.companionStatus !== null
+        ? {
+            service: status.companionStatus.service ?? null,
+            reachability: status.companionStatus.reachability ?? null,
+            singleton: status.companionStatus.singleton ?? null,
+          }
+        : null,
+  };
+}
+
 function resolveDefaultMsiOutDir(rootDir: string): string {
   return path.join(rootDir, WINDOWS_MSI_DEFAULT_OUT_DIR);
 }
@@ -355,9 +426,7 @@ function normalizeWindowsAuthenticodeSignature(
   };
 }
 
-function resolveInstallRootVersion(
-  params: { version?: string; rootDir: string },
-): Promise<string> {
+function resolveInstallRootVersion(params: { version?: string; rootDir: string }): Promise<string> {
   if (params.version?.trim()) {
     return Promise.resolve(params.version.trim());
   }
@@ -405,10 +474,12 @@ function releaseMatchesChannel(params: {
   return params.release.prerelease === true && inferred === "dev";
 }
 
-async function fetchWindowsMsiReleaseFeed(params: {
-  timeoutMs?: number;
-  fetchImpl?: typeof fetch;
-} = {}): Promise<GitHubReleasePayload[]> {
+async function fetchWindowsMsiReleaseFeed(
+  params: {
+    timeoutMs?: number;
+    fetchImpl?: typeof fetch;
+  } = {},
+): Promise<GitHubReleasePayload[]> {
   const fetchImpl = params.fetchImpl ?? globalThis.fetch?.bind(globalThis);
   if (typeof fetchImpl !== "function") {
     throw new Error("Global fetch is unavailable; cannot resolve Windows MSI releases.");
@@ -541,9 +612,7 @@ function renderWindowsWingetVersionManifest(params: {
   });
 }
 
-function renderWindowsWingetDefaultLocaleManifest(
-  metadata: WindowsWingetReleaseMetadata,
-): string {
+function renderWindowsWingetDefaultLocaleManifest(metadata: WindowsWingetReleaseMetadata): string {
   const payload: Record<string, unknown> = {
     PackageIdentifier: metadata.packageIdentifier,
     PackageVersion: metadata.packageVersion,
@@ -567,9 +636,7 @@ function renderWindowsWingetDefaultLocaleManifest(
   return YAML.stringify(payload);
 }
 
-function renderWindowsWingetInstallerManifest(
-  metadata: WindowsWingetReleaseMetadata,
-): string {
+function renderWindowsWingetInstallerManifest(metadata: WindowsWingetReleaseMetadata): string {
   return YAML.stringify({
     PackageIdentifier: metadata.packageIdentifier,
     PackageVersion: metadata.packageVersion,
@@ -612,24 +679,6 @@ function resolveRepairHint(params: {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function resolveInstalledBootstrapEntrypoint(installRoot: string): Promise<string> {
-  const candidates = [
-    path.join(installRoot, "dist", "windows-installer", "bootstrap-runtime.js"),
-    path.join(installRoot, "dist", "windows-installer", "bootstrap-runtime.mjs"),
-  ];
-  for (const candidate of candidates) {
-    try {
-      await fs.access(candidate);
-      return candidate;
-    } catch {
-      // keep going
-    }
-  }
-  throw new Error(
-    `Cannot find Windows installer bootstrap runtime in ${candidates.join(" or ")}.`,
-  );
 }
 
 async function resolveInstalledCliEntrypoint(installRoot: string): Promise<string> {
@@ -735,7 +784,8 @@ function normalizeManifest(
     gatewayBootstrapSucceeded: manifest.gatewayBootstrapSucceeded !== false,
     companionBootstrapSucceeded: manifest.companionBootstrapSucceeded !== false,
     companionInstallMode:
-      manifest.companionInstallMode === "schtasks" || manifest.companionInstallMode === "startup_folder"
+      manifest.companionInstallMode === "schtasks" ||
+      manifest.companionInstallMode === "startup_folder"
         ? manifest.companionInstallMode
         : null,
     companionSupervisorLabel: normalizeOptionalString(manifest.companionSupervisorLabel) ?? null,
@@ -743,9 +793,7 @@ function normalizeManifest(
   };
 }
 
-export function resolveWindowsInstallerManifestPath(
-  env: NodeJS.ProcessEnv = process.env,
-): string {
+export function resolveWindowsInstallerManifestPath(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(resolveStateDir(env), WINDOWS_MSI_MANIFEST_FILE);
 }
 
@@ -794,9 +842,11 @@ function buildRepairHints(params: {
   return [...hints];
 }
 
-export async function resolveWindowsInstallerBootstrapStatus(params: {
-  env?: NodeJS.ProcessEnv;
-} = {}): Promise<WindowsInstallerBootstrapStatus> {
+export async function resolveWindowsInstallerBootstrapStatus(
+  params: {
+    env?: NodeJS.ProcessEnv;
+  } = {},
+): Promise<WindowsInstallerBootstrapStatus> {
   const env = params.env ?? process.env;
   const manifest = await loadWindowsInstallerManifest(env).catch(() => null);
   const service = resolveGatewayService();
@@ -841,10 +891,12 @@ export async function resolveWindowsInstallerBootstrapStatus(params: {
   };
 }
 
-export async function resolveWindowsInstalledProductStatus(params: {
-  env?: NodeJS.ProcessEnv;
-  timeoutMs?: number;
-} = {}): Promise<WindowsInstalledProductStatus> {
+export async function resolveWindowsInstalledProductStatus(
+  params: {
+    env?: NodeJS.ProcessEnv;
+    timeoutMs?: number;
+  } = {},
+): Promise<WindowsInstalledProductStatus> {
   const env = params.env ?? process.env;
   const bootstrapStatus = await resolveWindowsInstallerBootstrapStatus({ env });
   const installRoot = bootstrapStatus.manifest?.installRoot ?? null;
@@ -854,6 +906,8 @@ export async function resolveWindowsInstalledProductStatus(params: {
       bootstrapStatus,
       gatewayStatus: null,
       companionStatus: null,
+      gatewayStatusCommand: null,
+      companionStatusCommand: null,
       gatewayStatusCommandOk: false,
       companionStatusCommandOk: false,
       companionPresenceDetected: false,
@@ -891,6 +945,8 @@ export async function resolveWindowsInstalledProductStatus(params: {
     bootstrapStatus,
     gatewayStatus: gatewayStatusCommand.parsed,
     companionStatus: companionStatusCommand.parsed,
+    gatewayStatusCommand: gatewayStatusCommand.command,
+    companionStatusCommand: companionStatusCommand.command,
     gatewayStatusCommandOk: gatewayStatusCommand.ok,
     companionStatusCommandOk: companionStatusCommand.ok,
     companionPresenceDetected,
@@ -898,9 +954,11 @@ export async function resolveWindowsInstalledProductStatus(params: {
   };
 }
 
-export async function resolveWindowsInstalledReleaseBaseline(params: {
-  env?: NodeJS.ProcessEnv;
-} = {}): Promise<WindowsInstalledReleaseBaseline | null> {
+export async function resolveWindowsInstalledReleaseBaseline(
+  params: {
+    env?: NodeJS.ProcessEnv;
+  } = {},
+): Promise<WindowsInstalledReleaseBaseline | null> {
   const bootstrapStatus = await resolveWindowsInstallerBootstrapStatus({
     env: params.env,
   });
@@ -909,9 +967,9 @@ export async function resolveWindowsInstalledReleaseBaseline(params: {
     return null;
   }
   const needsRepair =
-    bootstrapStatus.partialFailure
-    || !bootstrapStatus.gatewayInstalled
-    || (manifest.companionEnabled && !bootstrapStatus.companionInstalled);
+    bootstrapStatus.partialFailure ||
+    !bootstrapStatus.gatewayInstalled ||
+    (manifest.companionEnabled && !bootstrapStatus.companionInstalled);
   return {
     manifest,
     bootstrapStatus,
@@ -925,12 +983,14 @@ export async function resolveWindowsInstalledReleaseBaseline(params: {
   };
 }
 
-export async function resolveWindowsMsiAvailableUpdate(params: {
-  baseline?: WindowsInstalledReleaseBaseline | null;
-  releaseChannel?: WindowsMsiReleaseChannel;
-  timeoutMs?: number;
-  fetchImpl?: typeof fetch;
-} = {}): Promise<WindowsMsiAvailableUpdate> {
+export async function resolveWindowsMsiAvailableUpdate(
+  params: {
+    baseline?: WindowsInstalledReleaseBaseline | null;
+    releaseChannel?: WindowsMsiReleaseChannel;
+    timeoutMs?: number;
+    fetchImpl?: typeof fetch;
+  } = {},
+): Promise<WindowsMsiAvailableUpdate> {
   const baseline =
     params.baseline === undefined
       ? await resolveWindowsInstalledReleaseBaseline()
@@ -986,14 +1046,16 @@ export async function resolveWindowsMsiAvailableUpdate(params: {
   };
 }
 
-export async function runWindowsMsiUpgrade(params: {
-  baseline?: WindowsInstalledReleaseBaseline | null;
-  releaseChannel?: WindowsMsiReleaseChannel;
-  env?: NodeJS.ProcessEnv;
-  timeoutMs?: number;
-  downloadDir?: string;
-  fetchImpl?: typeof fetch;
-} = {}): Promise<WindowsMsiUpgradeResult> {
+export async function runWindowsMsiUpgrade(
+  params: {
+    baseline?: WindowsInstalledReleaseBaseline | null;
+    releaseChannel?: WindowsMsiReleaseChannel;
+    env?: NodeJS.ProcessEnv;
+    timeoutMs?: number;
+    downloadDir?: string;
+    fetchImpl?: typeof fetch;
+  } = {},
+): Promise<WindowsMsiUpgradeResult> {
   const update = await resolveWindowsMsiAvailableUpdate({
     baseline: params.baseline,
     releaseChannel: params.releaseChannel,
@@ -1030,13 +1092,15 @@ export async function runWindowsMsiUpgrade(params: {
   };
 }
 
-export async function runWindowsMsiRepair(params: {
-  baseline?: WindowsInstalledReleaseBaseline | null;
-  env?: NodeJS.ProcessEnv;
-  timeoutMs?: number;
-  downloadDir?: string;
-  fetchImpl?: typeof fetch;
-} = {}): Promise<WindowsMsiRepairResult> {
+export async function runWindowsMsiRepair(
+  params: {
+    baseline?: WindowsInstalledReleaseBaseline | null;
+    env?: NodeJS.ProcessEnv;
+    timeoutMs?: number;
+    downloadDir?: string;
+    fetchImpl?: typeof fetch;
+  } = {},
+): Promise<WindowsMsiRepairResult> {
   const baseline =
     params.baseline === undefined
       ? await resolveWindowsInstalledReleaseBaseline({ env: params.env })
@@ -1054,8 +1118,8 @@ export async function runWindowsMsiRepair(params: {
     version: baseline.installedVersion,
   });
   const artifact =
-    exactArtifact
-    ?? resolveWindowsMsiReleaseArtifactFromFeed({
+    exactArtifact ??
+    resolveWindowsMsiReleaseArtifactFromFeed({
       releases,
       releaseChannel: baseline.releaseChannel,
     });
@@ -1134,7 +1198,7 @@ function decodeWindowsMsiLogBuffer(buffer: Buffer): string {
     const looksUtf16Le = oddBytePairs > 0 && zeroOddBytes / oddBytePairs > 0.35;
     text = looksUtf16Le ? buffer.toString("utf16le") : buffer.toString("utf8");
   }
-  return text.replace(/\u0000/g, "").replace(/\r\n/g, "\n");
+  return text.replaceAll("\u0000", "").replace(/\r\n/g, "\n");
 }
 
 function extractWindowsMsiDiagnosticExcerpt(
@@ -1236,13 +1300,13 @@ async function runWindowsMsiSmokePhase(params: {
     });
     const companionInstallMode = installedProduct.bootstrapStatus.companionInstallMode;
     const installReady =
-      installedProduct.manifest !== null
-      && installedProduct.bootstrapStatus.gatewayInstalled
-      && installedProduct.bootstrapStatus.companionInstalled
-      && (companionInstallMode === "schtasks" || companionInstallMode === "startup_folder")
-      && installedProduct.gatewayStatusCommandOk
-      && installedProduct.companionStatusCommandOk
-      && installedProduct.companionPresenceDetected;
+      installedProduct.manifest !== null &&
+      installedProduct.bootstrapStatus.gatewayInstalled &&
+      installedProduct.bootstrapStatus.companionInstalled &&
+      (companionInstallMode === "schtasks" || companionInstallMode === "startup_folder") &&
+      installedProduct.gatewayStatusCommandOk &&
+      installedProduct.companionStatusCommandOk &&
+      installedProduct.companionPresenceDetected;
     if (installReady) {
       return {
         phase: params.phase,
@@ -1257,8 +1321,12 @@ async function runWindowsMsiSmokePhase(params: {
     }
   }
   const logTail = await readWindowsMsiLogTail({ logPath });
+  const installedProductSummary = summarizeWindowsInstalledProductStatus(installedProduct);
   throw new Error(
     `Windows MSI ${params.phase} verification failed. Log: ${logPath}` +
+      (installedProductSummary
+        ? `\n--- Installed product snapshot ---\n${JSON.stringify(installedProductSummary, null, 2)}`
+        : "") +
       (logTail ? `\n--- MSI log tail ---\n${logTail}` : ""),
   );
 }
@@ -1311,9 +1379,11 @@ export async function runWindowsPostInstallBootstrap(params: {
   const manifest = normalizeManifest({
     installMode: "msi",
     productName: params.productName ?? WINDOWS_MSI_PRODUCT_NAME,
-    productVersion: params.productVersion ?? (await resolveInstallRootVersion({
-      rootDir: params.installRoot,
-    })),
+    productVersion:
+      params.productVersion ??
+      (await resolveInstallRootVersion({
+        rootDir: params.installRoot,
+      })),
     architecture: WINDOWS_MSI_ARCH,
     installRoot: params.installRoot,
     installedAt: new Date().toISOString(),
@@ -1348,9 +1418,11 @@ export async function runWindowsPostInstallBootstrap(params: {
   };
 }
 
-export async function runWindowsPostUninstallCleanup(params: {
-  env?: NodeJS.ProcessEnv;
-} = {}): Promise<WindowsInstallerCleanupResult> {
+export async function runWindowsPostUninstallCleanup(
+  params: {
+    env?: NodeJS.ProcessEnv;
+  } = {},
+): Promise<WindowsInstallerCleanupResult> {
   const env = { ...process.env, ...params.env };
   const companion = await uninstallWindowsCompanionFromInstaller({
     env,
@@ -1390,7 +1462,7 @@ export function renderWindowsInstallerBootstrapScript(params: {
     "$ErrorActionPreference = 'Stop'",
     `$installRoot = '${installRoot}'`,
     `$productVersion = '${productVersion}'`,
-    "$bootstrapLog = Join-Path ([System.IO.Path]::GetTempPath()) (\"OpenClaw-bootstrap-\" + $Mode + \".log\")",
+    '$bootstrapLog = Join-Path ([System.IO.Path]::GetTempPath()) ("OpenClaw-bootstrap-" + $Mode + ".log")',
     "function Write-BootstrapLog([string]$Message) {",
     "  $line = \"[$((Get-Date).ToString('o'))] $Message\"",
     "  Add-Content -Path $bootstrapLog -Value $line -Encoding utf8",
@@ -1400,25 +1472,25 @@ export function renderWindowsInstallerBootstrapScript(params: {
     buildNodePathClause(),
     "$runtime = Join-Path $installRoot 'dist\\windows-installer\\bootstrap-runtime.js'",
     "if (-not (Test-Path $runtime)) {",
-    "  Write-BootstrapLog \"Missing bootstrap runtime: $runtime\"",
-    "  Write-Error \"Missing bootstrap runtime: $runtime (bootstrap log: $bootstrapLog)\"",
+    '  Write-BootstrapLog "Missing bootstrap runtime: $runtime"',
+    '  Write-Error "Missing bootstrap runtime: $runtime (bootstrap log: $bootstrapLog)"',
     "  exit 3",
     "}",
-    "Write-BootstrapLog \"Using node: $node\"",
-    "Write-BootstrapLog \"Using runtime: $runtime\"",
+    'Write-BootstrapLog "Using node: $node"',
+    'Write-BootstrapLog "Using runtime: $runtime"',
     "try {",
     "  & $node $runtime $Mode --install-root $installRoot --product-version $productVersion --result-log-path $bootstrapLog *>&1 | Tee-Object -FilePath $bootstrapLog -Append",
     "  $exitCode = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }",
-    "  Write-BootstrapLog \"bootstrap runtime exited with code $exitCode\"",
+    '  Write-BootstrapLog "bootstrap runtime exited with code $exitCode"',
     "  exit $exitCode",
     "} catch {",
     "  $message = ($_ | Out-String).Trim()",
     "  if ($message) {",
-    "    Write-BootstrapLog \"bootstrap runtime threw: $message\"",
-    "    Write-Error \"$message (bootstrap log: $bootstrapLog)\"",
+    '    Write-BootstrapLog "bootstrap runtime threw: $message"',
+    '    Write-Error "$message (bootstrap log: $bootstrapLog)"',
     "  } else {",
-    "    Write-BootstrapLog \"bootstrap runtime threw an unknown error\"",
-    "    Write-Error \"Bootstrap runtime failed unexpectedly (bootstrap log: $bootstrapLog)\"",
+    '    Write-BootstrapLog "bootstrap runtime threw an unknown error"',
+    '    Write-Error "Bootstrap runtime failed unexpectedly (bootstrap log: $bootstrapLog)"',
     "  }",
     "  exit 90",
     "}",
@@ -1446,15 +1518,21 @@ function createDirectoryTree(entries: WxsFileEntry[]): DirectoryNode {
 
 function renderDirectoryNode(node: DirectoryNode, parentId: string, prefix = ""): string {
   const lines: string[] = [];
-  const childEntries = [...node.children.entries()].toSorted((left, right) => left[0].localeCompare(right[0]));
+  const childEntries = [...node.children.entries()].toSorted((left, right) =>
+    left[0].localeCompare(right[0]),
+  );
   for (const [name, child] of childEntries) {
     const dirId = sanitizeId(`${prefix}${name}`, "Dir_");
-    lines.push(`${"  ".repeat(prefix.split("/").length + 2)}<Directory Id="${dirId}" Name="${xmlEscape(name)}">`);
+    lines.push(
+      `${"  ".repeat(prefix.split("/").length + 2)}<Directory Id="${dirId}" Name="${xmlEscape(name)}">`,
+    );
     lines.push(renderDirectoryNode(child, dirId, `${prefix}${name}/`));
     lines.push(`${"  ".repeat(prefix.split("/").length + 2)}</Directory>`);
   }
   const fileIndent = "  ".repeat(prefix.split("/").length + 2);
-  for (const entry of [...node.files].toSorted((left, right) => left.relativePath.localeCompare(right.relativePath))) {
+  for (const entry of [...node.files].toSorted((left, right) =>
+    left.relativePath.localeCompare(right.relativePath),
+  )) {
     const componentId = sanitizeId(entry.relativePath, "Cmp_");
     const fileId = sanitizeId(entry.relativePath, "Fil_");
     lines.push(`${fileIndent}<Component Id="${componentId}" Guid="*">`);
@@ -1497,20 +1575,20 @@ export function renderWindowsMsiSource(params: {
     '    <Feature Id="MainFeature" Title="OpenClaw" Level="1">',
     '      <ComponentGroupRef Id="MainFeatureComponents" />',
     "    </Feature>",
-    '    <SetProperty Id="RunPostInstallBootstrap" Action="SetRunPostInstallBootstrapCommandLine" Value="&quot;[SystemFolder]WindowsPowerShell\\v1.0\\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;'
-      + xmlEscape(bootstrapScript)
-      + '&quot; install" After="InstallFiles" Sequence="execute" Condition="NOT REMOVE~=&quot;ALL&quot;" />',
+    '    <SetProperty Id="RunPostInstallBootstrap" Action="SetRunPostInstallBootstrapCommandLine" Value="&quot;[SystemFolder]WindowsPowerShell\\v1.0\\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;' +
+      xmlEscape(bootstrapScript) +
+      '&quot; install" After="InstallFiles" Sequence="execute" Condition="NOT REMOVE~=&quot;ALL&quot;" />',
     '    <CustomAction Id="RunPostInstallBootstrap" BinaryRef="Wix4UtilCA_X86" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="yes" />',
-    '    <SetProperty Id="RunPostUninstallCleanup" Action="SetRunPostUninstallCleanupCommandLine" Value="&quot;[SystemFolder]WindowsPowerShell\\v1.0\\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;'
-      + xmlEscape(bootstrapScript)
-      + '&quot; uninstall" Before="RemoveFiles" Sequence="execute" Condition="REMOVE~=&quot;ALL&quot;" />',
+    '    <SetProperty Id="RunPostUninstallCleanup" Action="SetRunPostUninstallCleanupCommandLine" Value="&quot;[SystemFolder]WindowsPowerShell\\v1.0\\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;' +
+      xmlEscape(bootstrapScript) +
+      '&quot; uninstall" Before="RemoveFiles" Sequence="execute" Condition="REMOVE~=&quot;ALL&quot;" />',
     '    <CustomAction Id="RunPostUninstallCleanup" BinaryRef="Wix4UtilCA_X86" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="yes" />',
     "    <InstallExecuteSequence>",
     '      <Custom Action="RunPostInstallBootstrap" After="SetRunPostInstallBootstrapCommandLine" />',
     '      <Custom Action="RunPostUninstallCleanup" After="SetRunPostUninstallCleanupCommandLine" />',
     "    </InstallExecuteSequence>",
     "  </Package>",
-    '  <Fragment>',
+    "  <Fragment>",
     '    <ComponentGroup Id="MainFeatureComponents">',
     ...params.fileEntries
       .map((entry) => `      <ComponentRef Id="${sanitizeId(entry.relativePath, "Cmp_")}" />`)
@@ -1623,7 +1701,8 @@ export async function verifyWindowsMsiSignature(params: {
     parsed = JSON.parse(result.stdout) as WindowsAuthenticodeSignaturePayload;
   } catch (error) {
     throw new Error(
-      `Failed to parse Windows MSI signature JSON: ${String(error)}${result.stdout ? `\n${result.stdout}` : ""}`, { cause: error },
+      `Failed to parse Windows MSI signature JSON: ${String(error)}${result.stdout ? `\n${result.stdout}` : ""}`,
+      { cause: error },
     );
   }
   return normalizeWindowsAuthenticodeSignature(parsed, params.expectedSignerSubject);
@@ -1810,8 +1889,7 @@ export async function buildWindowsWingetManifestSet(params: {
   fetchImpl?: typeof fetch;
 }): Promise<WindowsWingetManifestSet> {
   const metadata = await resolveWindowsWingetReleaseMetadata(params);
-  const outDir =
-    params.outDir ?? path.join(process.cwd(), WINDOWS_WINGET_DEFAULT_OUT_DIR);
+  const outDir = params.outDir ?? path.join(process.cwd(), WINDOWS_WINGET_DEFAULT_OUT_DIR);
   const manifestRoot = path.join(outDir, resolveWindowsWingetManifestRoot(metadata.packageVersion));
   await fs.rm(manifestRoot, { recursive: true, force: true });
   await fs.mkdir(manifestRoot, { recursive: true });
@@ -1832,11 +1910,7 @@ export async function buildWindowsWingetManifestSet(params: {
     renderWindowsWingetDefaultLocaleManifest(metadata),
     "utf8",
   );
-  await fs.writeFile(
-    installerManifestPath,
-    renderWindowsWingetInstallerManifest(metadata),
-    "utf8",
-  );
+  await fs.writeFile(installerManifestPath, renderWindowsWingetInstallerManifest(metadata), "utf8");
   return {
     directoryPath: manifestRoot,
     packageIdentifier: metadata.packageIdentifier,
@@ -1864,8 +1938,8 @@ export async function publishWindowsWingetManifest(params: {
   const targetRepo = params.targetRepo ?? WINDOWS_WINGET_UPSTREAM_REPO;
   const baseBranch = params.baseBranch ?? WINDOWS_WINGET_BASE_BRANCH;
   const branchName =
-    params.branchName
-    ?? `openclaw-winget-v${params.manifestSet.packageVersion.replace(/[^A-Za-z0-9.-]/g, "-")}`;
+    params.branchName ??
+    `openclaw-winget-v${params.manifestSet.packageVersion.replace(/[^A-Za-z0-9.-]/g, "-")}`;
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-winget-publish-"));
   const cloneDir = path.join(tempRoot, "repo");
   const forkRepoUrl = `https://x-access-token:${params.githubToken}@github.com/${params.forkRepo}.git`;
@@ -1880,15 +1954,21 @@ export async function publishWindowsWingetManifest(params: {
     if (command.code !== 0) {
       throw new Error(command.stderr || command.stdout || "Failed to clone winget fork.");
     }
-    command = await runCommandWithTimeout(["git", "-C", cloneDir, "remote", "add", "upstream", `https://github.com/${targetRepo}.git`], {
-      timeoutMs: params.timeoutMs ?? WINDOWS_MSI_BOOTSTRAP_TIMEOUT_MS,
-    });
+    command = await runCommandWithTimeout(
+      ["git", "-C", cloneDir, "remote", "add", "upstream", `https://github.com/${targetRepo}.git`],
+      {
+        timeoutMs: params.timeoutMs ?? WINDOWS_MSI_BOOTSTRAP_TIMEOUT_MS,
+      },
+    );
     if (command.code !== 0) {
       throw new Error(command.stderr || command.stdout || "Failed to add winget upstream remote.");
     }
-    command = await runCommandWithTimeout(["git", "-C", cloneDir, "fetch", "upstream", baseBranch], {
-      timeoutMs: params.timeoutMs ?? WINDOWS_MSI_BOOTSTRAP_TIMEOUT_MS,
-    });
+    command = await runCommandWithTimeout(
+      ["git", "-C", cloneDir, "fetch", "upstream", baseBranch],
+      {
+        timeoutMs: params.timeoutMs ?? WINDOWS_MSI_BOOTSTRAP_TIMEOUT_MS,
+      },
+    );
     if (command.code !== 0) {
       throw new Error(command.stderr || command.stdout || "Failed to fetch winget upstream.");
     }
@@ -1897,7 +1977,9 @@ export async function publishWindowsWingetManifest(params: {
       { timeoutMs: params.timeoutMs ?? WINDOWS_MSI_BOOTSTRAP_TIMEOUT_MS },
     );
     if (command.code !== 0) {
-      throw new Error(command.stderr || command.stdout || "Failed to create winget publish branch.");
+      throw new Error(
+        command.stderr || command.stdout || "Failed to create winget publish branch.",
+      );
     }
     await fs.mkdir(path.dirname(targetManifestDir), { recursive: true });
     await fs.rm(targetManifestDir, { recursive: true, force: true });
@@ -1907,7 +1989,14 @@ export async function publishWindowsWingetManifest(params: {
       { timeoutMs: params.timeoutMs ?? WINDOWS_MSI_BOOTSTRAP_TIMEOUT_MS },
     );
     await runCommandWithTimeout(
-      ["git", "-C", cloneDir, "config", "user.email", params.gitUserEmail ?? "release-bot@openclaw.ai"],
+      [
+        "git",
+        "-C",
+        cloneDir,
+        "config",
+        "user.email",
+        params.gitUserEmail ?? "release-bot@openclaw.ai",
+      ],
       { timeoutMs: params.timeoutMs ?? WINDOWS_MSI_BOOTSTRAP_TIMEOUT_MS },
     );
     command = await runCommandWithTimeout(["git", "-C", cloneDir, "status", "--porcelain"], {
@@ -1928,26 +2017,31 @@ export async function publishWindowsWingetManifest(params: {
         reason: "winget manifests already match the current signed MSI release.",
       };
     }
-    await runCommandWithTimeout(["git", "-C", cloneDir, "add", resolveWindowsWingetManifestRoot(params.manifestSet.packageVersion)], {
-      timeoutMs: params.timeoutMs ?? WINDOWS_MSI_BOOTSTRAP_TIMEOUT_MS,
-    });
-    command = await runCommandWithTimeout(
+    await runCommandWithTimeout(
       [
         "git",
         "-C",
         cloneDir,
-        "commit",
-        "-m",
-        `Add OpenClaw ${params.manifestSet.packageVersion}`,
+        "add",
+        resolveWindowsWingetManifestRoot(params.manifestSet.packageVersion),
       ],
+      {
+        timeoutMs: params.timeoutMs ?? WINDOWS_MSI_BOOTSTRAP_TIMEOUT_MS,
+      },
+    );
+    command = await runCommandWithTimeout(
+      ["git", "-C", cloneDir, "commit", "-m", `Add OpenClaw ${params.manifestSet.packageVersion}`],
       { timeoutMs: params.timeoutMs ?? WINDOWS_MSI_BOOTSTRAP_TIMEOUT_MS },
     );
     if (command.code !== 0) {
       throw new Error(command.stderr || command.stdout || "Failed to commit winget manifests.");
     }
-    command = await runCommandWithTimeout(["git", "-C", cloneDir, "push", "origin", branchName, "--force-with-lease"], {
-      timeoutMs: params.timeoutMs ?? WINDOWS_MSI_BOOTSTRAP_TIMEOUT_MS,
-    });
+    command = await runCommandWithTimeout(
+      ["git", "-C", cloneDir, "push", "origin", branchName, "--force-with-lease"],
+      {
+        timeoutMs: params.timeoutMs ?? WINDOWS_MSI_BOOTSTRAP_TIMEOUT_MS,
+      },
+    );
     if (command.code !== 0) {
       throw new Error(command.stderr || command.stdout || "Failed to push winget manifest branch.");
     }
@@ -2001,15 +2095,17 @@ export async function publishWindowsWingetManifest(params: {
   }
 }
 
-export async function buildWindowsMsiInstaller(params: {
-  rootDir?: string;
-  outDir?: string;
-  version?: string;
-  artifactName?: string;
-  wixBinary?: string;
-  skipWixBuild?: boolean;
-  timeoutMs?: number;
-} = {}): Promise<WindowsMsiBuildResult> {
+export async function buildWindowsMsiInstaller(
+  params: {
+    rootDir?: string;
+    outDir?: string;
+    version?: string;
+    artifactName?: string;
+    wixBinary?: string;
+    skipWixBuild?: boolean;
+    timeoutMs?: number;
+  } = {},
+): Promise<WindowsMsiBuildResult> {
   const rootDir = params.rootDir ?? process.cwd();
   const version = await resolveInstallRootVersion({ version: params.version, rootDir });
   await ensureBuiltArtifacts(rootDir);
@@ -2045,15 +2141,7 @@ export async function buildWindowsMsiInstaller(params: {
   if (!params.skipWixBuild) {
     const wixBinary = params.wixBinary ?? "wix";
     const result = await runCommandWithTimeout(
-      [
-        wixBinary,
-        "build",
-        sourcePath,
-        "-ext",
-        "WixToolset.Util.wixext",
-        "-o",
-        artifactPath,
-      ],
+      [wixBinary, "build", sourcePath, "-ext", "WixToolset.Util.wixext", "-o", artifactPath],
       {
         cwd: rootDir,
         timeoutMs: params.timeoutMs ?? WINDOWS_MSI_BOOTSTRAP_TIMEOUT_MS,
@@ -2127,13 +2215,11 @@ export async function runWindowsMsiSmokeUninstall(params: {
   });
   const installedProduct = result.installedProduct;
   if (
-    installedProduct?.manifest !== null
-    || installedProduct?.bootstrapStatus.gatewayInstalled
-    || installedProduct?.bootstrapStatus.companionInstalled
+    installedProduct?.manifest !== null ||
+    installedProduct?.bootstrapStatus.gatewayInstalled ||
+    installedProduct?.bootstrapStatus.companionInstalled
   ) {
-    throw new Error(
-      `Windows MSI uninstall verification failed. Log: ${result.logPath}`,
-    );
+    throw new Error(`Windows MSI uninstall verification failed. Log: ${result.logPath}`);
   }
   return result;
 }
