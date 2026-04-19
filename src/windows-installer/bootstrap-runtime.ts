@@ -1,3 +1,5 @@
+import { appendFile } from "node:fs/promises";
+
 import { runWindowsPostInstallBootstrap, runWindowsPostUninstallCleanup } from "./msi.js";
 
 function readArgValue(flag: string): string | null {
@@ -8,12 +10,44 @@ function readArgValue(flag: string): string | null {
   return process.argv[index + 1] ?? null;
 }
 
+function buildInstallBootstrapFailurePayload(result: Awaited<ReturnType<typeof runWindowsPostInstallBootstrap>>) {
+  return {
+    gateway: {
+      ok: result.gateway.ok,
+      code: result.gateway.code,
+      stdout: result.gateway.stdout,
+      stderr: result.gateway.stderr,
+    },
+    companion: {
+      attempted: result.companion.attempted,
+      ok: result.companion.ok,
+      skipped: result.companion.skipped,
+      code: result.companion.code,
+      stdout: result.companion.stdout,
+      stderr: result.companion.stderr,
+    },
+    repairHints: result.status.repairHints,
+    partialFailure: result.status.partialFailure,
+  };
+}
+
+async function emitBootstrapResultJson(logPath: string | null, payload: unknown) {
+  const line = `BOOTSTRAP_RESULT_JSON=${JSON.stringify(payload)}`;
+  console.error(`[windows-installer-bootstrap] ${line}`);
+  if (logPath) {
+    await appendFile(logPath, `${line}\n`, "utf8");
+  }
+}
+
 async function main() {
   const mode = process.argv[2]?.trim();
   const installRoot = readArgValue("--install-root");
   const productVersion = readArgValue("--product-version");
+  const resultLogPath = readArgValue("--result-log-path");
   if (!mode || !installRoot || !productVersion) {
-    throw new Error("Usage: bootstrap-runtime.js <install|uninstall> --install-root <path> --product-version <version>");
+    throw new Error(
+      "Usage: bootstrap-runtime.js <install|uninstall> --install-root <path> --product-version <version> [--result-log-path <path>]",
+    );
   }
 
   if (mode === "install") {
@@ -23,30 +57,9 @@ async function main() {
       env: process.env,
     });
     if (!result.gateway.ok || (result.companion.attempted && !result.companion.ok)) {
-      console.error(
-        `[windows-installer-bootstrap] install bootstrap failed: ${JSON.stringify(
-          {
-            gateway: {
-              ok: result.gateway.ok,
-              code: result.gateway.code,
-              stdout: result.gateway.stdout,
-              stderr: result.gateway.stderr,
-            },
-            companion: {
-              attempted: result.companion.attempted,
-              ok: result.companion.ok,
-              skipped: result.companion.skipped,
-              code: result.companion.code,
-              stdout: result.companion.stdout,
-              stderr: result.companion.stderr,
-            },
-            repairHints: result.status.repairHints,
-            partialFailure: result.status.partialFailure,
-          },
-          null,
-          2,
-        )}`,
-      );
+      const payload = buildInstallBootstrapFailurePayload(result);
+      console.error("[windows-installer-bootstrap] install bootstrap failed");
+      await emitBootstrapResultJson(resultLogPath, payload);
       process.exitCode = 1;
     }
     return;

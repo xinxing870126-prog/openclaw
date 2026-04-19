@@ -1407,7 +1407,7 @@ export function renderWindowsInstallerBootstrapScript(params: {
     "Write-BootstrapLog \"Using node: $node\"",
     "Write-BootstrapLog \"Using runtime: $runtime\"",
     "try {",
-    "  & $node $runtime $Mode --install-root $installRoot --product-version $productVersion *>&1 | Tee-Object -FilePath $bootstrapLog -Append",
+    "  & $node $runtime $Mode --install-root $installRoot --product-version $productVersion --result-log-path $bootstrapLog *>&1 | Tee-Object -FilePath $bootstrapLog -Append",
     "  $exitCode = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }",
     "  Write-BootstrapLog \"bootstrap runtime exited with code $exitCode\"",
     "  exit $exitCode",
