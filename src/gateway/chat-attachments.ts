@@ -1,8 +1,15 @@
 import { formatErrorMessage } from "../infra/errors.js";
 import { estimateBase64DecodedBytes } from "../media/base64.js";
+import { renderFileContextBlock } from "../media/file-context.js";
+import {
+  extractFileContentFromSource,
+  resolveInputFileLimits,
+} from "../media/input-files.js";
 import type { PromptImageOrderEntry } from "../media/prompt-image-order.js";
 import { sniffMimeFromBase64 } from "../media/sniff-mime-from-base64.js";
 import { deleteMediaBuffer, saveMediaBuffer } from "../media/store.js";
+import { wrapExternalContent } from "../security/external-content.js";
+import type { PromptDocumentContent } from "../agents/prompt-media.js";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalLowercaseString,
@@ -47,6 +54,8 @@ export type ParsedMessageWithImages = {
   message: string;
   /** Small attachments (≤ OFFLOAD_THRESHOLD_BYTES) passed inline to the model */
   images: ChatImageContent[];
+  /** Native-first document blocks passed inline to document-capable models. */
+  documents: PromptDocumentContent[];
   /** Original accepted attachment order after inline/offloaded split. */
   imageOrder: PromptImageOrderEntry[];
   /**
@@ -139,6 +148,35 @@ function normalizeMime(mime?: string): string | undefined {
 
 function isImageMime(mime?: string): boolean {
   return typeof mime === "string" && mime.startsWith("image/");
+}
+
+function isVideoMime(mime?: string): boolean {
+  return typeof mime === "string" && mime.startsWith("video/");
+}
+
+function isLegacyOfficeMime(mime?: string): boolean {
+  return (
+    mime === "application/msword" ||
+    mime === "application/vnd.ms-excel" ||
+    mime === "application/vnd.ms-powerpoint"
+  );
+}
+
+function buildNonImageAttachmentSummary(params: {
+  fileName: string;
+  mimeType: string;
+  extractedText: string;
+}): string {
+  if (params.extractedText) {
+    return params.extractedText;
+  }
+  if (isVideoMime(params.mimeType)) {
+    return `[Video attachment uploaded: ${params.fileName} (${params.mimeType}). Rich video understanding is not enabled in chat yet.]`;
+  }
+  if (isLegacyOfficeMime(params.mimeType)) {
+    return `[Legacy Office attachment uploaded: ${params.fileName} (${params.mimeType}). Best-effort extraction ran, but no readable text was recovered.]`;
+  }
+  return `[Attachment uploaded: ${params.fileName} (${params.mimeType}). Direct text content was not extracted.]`;
 }
 
 function isValidBase64(value: string): boolean {
@@ -295,28 +333,25 @@ function validateAttachmentBase64OrThrow(
 export async function parseMessageWithAttachments(
   message: string,
   attachments: ChatAttachment[] | undefined,
-  opts?: { maxBytes?: number; log?: AttachmentLog; supportsImages?: boolean },
+  opts?: {
+    maxBytes?: number;
+    log?: AttachmentLog;
+    supportsImages?: boolean;
+    supportsDocuments?: boolean;
+  },
 ): Promise<ParsedMessageWithImages> {
-  const maxBytes = opts?.maxBytes ?? 5_000_000;
+  const maxBytes = opts?.maxBytes ?? 12 * 1024 * 1024;
   const log = opts?.log;
+  const fileLimits = resolveInputFileLimits({ allowUrl: false, maxBytes });
+  const supportsImages = opts?.supportsImages !== false;
+  const supportsDocuments = opts?.supportsDocuments === true;
 
   if (!attachments || attachments.length === 0) {
-    return { message, images: [], imageOrder: [], offloadedRefs: [] };
-  }
-
-  // For text-only models drop all attachments cleanly. Do not save files or
-  // inject media:// markers that would never be resolved and would leak
-  // internal path references into the model's prompt.
-  if (opts?.supportsImages === false) {
-    if (attachments.length > 0) {
-      log?.warn(
-        `parseMessageWithAttachments: ${attachments.length} attachment(s) dropped — model does not support images`,
-      );
-    }
-    return { message, images: [], imageOrder: [], offloadedRefs: [] };
+    return { message, images: [], documents: [], imageOrder: [], offloadedRefs: [] };
   }
 
   const images: ChatImageContent[] = [];
+  const documents: PromptDocumentContent[] = [];
   const imageOrder: PromptImageOrderEntry[] = [];
   const offloadedRefs: OffloadedRef[] = [];
   let updatedMessage = message;
@@ -357,23 +392,94 @@ export async function parseMessageWithAttachments(
       const providedMime = normalizeMime(mime);
       const sniffedMime = normalizeMime(await sniffMimeFromBase64(b64));
 
-      if (sniffedMime && !isImageMime(sniffedMime)) {
-        log?.warn(`attachment ${label}: detected non-image (${sniffedMime}), dropping`);
-        continue;
-      }
-      if (!sniffedMime && !isImageMime(providedMime)) {
-        log?.warn(`attachment ${label}: unable to detect image mime type, dropping`);
-        continue;
-      }
       if (sniffedMime && providedMime && sniffedMime !== providedMime) {
         log?.warn(
           `attachment ${label}: mime mismatch (${providedMime} -> ${sniffedMime}), using sniffed`,
         );
       }
 
-      // Third fallback normalises `mime` so a raw un-normalised string (e.g.
-      // "IMAGE/JPEG") does not silently bypass the SUPPORTED_OFFLOAD_MIMES check.
-      const finalMime = sniffedMime ?? providedMime ?? normalizeMime(mime) ?? mime;
+      const finalMime =
+        providedMime && isLegacyOfficeMime(providedMime) &&
+        (
+          sniffedMime === "text/plain" ||
+          sniffedMime === "application/octet-stream" ||
+          sniffedMime === "application/x-cfb"
+        )
+          ? providedMime
+          : sniffedMime ?? providedMime ?? normalizeMime(mime) ?? "application/octet-stream";
+
+      if (!isImageMime(finalMime)) {
+        if (supportsDocuments && finalMime === "application/pdf") {
+          documents.push({
+            type: "document",
+            data: b64,
+            mimeType: "application/pdf",
+            fileName: label,
+          });
+          updatedMessage += `\n[native document attached: ${label} (${finalMime})]`;
+          continue;
+        }
+
+        if (fileLimits.allowedMimes.has(finalMime)) {
+          const extracted = await extractFileContentFromSource({
+            source: {
+              type: "base64",
+              data: b64,
+              mediaType: finalMime,
+              filename: label,
+            },
+            limits: fileLimits,
+          });
+
+          const extractedText = extracted.text?.trim();
+          if (extractedText) {
+            updatedMessage += `\n\n${renderFileContextBlock({
+              filename: extracted.filename,
+              mimeType: finalMime,
+              content: wrapExternalContent(extractedText, {
+                source: "unknown",
+                includeWarning: false,
+              }),
+            })}`;
+          } else {
+            const summary = buildNonImageAttachmentSummary({
+              fileName: extracted.filename,
+              mimeType: finalMime,
+              extractedText: "",
+            });
+            updatedMessage += `\n\n${renderFileContextBlock({
+              filename: extracted.filename,
+              mimeType: finalMime,
+              content: summary,
+              surroundContentWithNewlines: false,
+            })}`;
+          }
+
+          if (supportsImages && extracted.images && extracted.images.length > 0) {
+            for (const image of extracted.images) {
+              images.push({ type: "image", data: image.data, mimeType: image.mimeType });
+              imageOrder.push("inline");
+            }
+          }
+          continue;
+        }
+
+        const summary = isVideoMime(finalMime)
+          ? `[Video attachment uploaded: ${label} (${finalMime}). Rich video understanding is not enabled in chat yet.]`
+          : `[Binary attachment uploaded: ${label} (${finalMime}). Direct extraction is not available in chat yet.]`;
+        updatedMessage += `\n\n${renderFileContextBlock({
+          filename: label,
+          mimeType: finalMime,
+          content: summary,
+          surroundContentWithNewlines: false,
+        })}`;
+        continue;
+      }
+
+      if (!supportsImages) {
+        log?.warn(`attachment ${label}: dropped image attachment for text-only model`);
+        continue;
+      }
 
       let isOffloaded = false;
 
@@ -459,6 +565,7 @@ export async function parseMessageWithAttachments(
   return {
     message: updatedMessage !== message ? updatedMessage.trimEnd() : message,
     images,
+    documents,
     imageOrder,
     offloadedRefs,
   };

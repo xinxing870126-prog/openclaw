@@ -1,0 +1,111 @@
+export {
+  summarizeDesktopShellRuntimeModule as summarizeDesktopShellRuntimeIntegration,
+  startDesktopShellRuntimeModule as initializeDesktopShellRuntimeIntegration,
+  reportDesktopShellRuntimeModuleHealth as reportDesktopShellRuntimeIntegrationHealth,
+  pollDesktopShellRuntimeModuleHealthFeed as pollDesktopShellRuntimeIntegrationHealthFeed,
+  runDesktopShellRuntimeModuleHeartbeatCycle as runDesktopShellRuntimeIntegrationHeartbeatCycle,
+  type DesktopShellRuntimeModuleHealthReportResult as DesktopShellRuntimeHealthReportResult,
+  type DesktopShellRuntimeModuleHeartbeatCycleResult as DesktopShellRuntimeIntegrationHeartbeatCycleResult,
+  type DesktopShellRuntimeModuleOptions as DesktopShellRuntimeIntegrationOptions,
+  type DesktopShellRuntimeModulePollResult as DesktopShellRuntimeIntegrationPollResult,
+  type DesktopShellRuntimeModuleResult as DesktopShellRuntimeIntegrationResult,
+} from "./shell-local-bridge-desktop-runtime.module.js";
+export {
+  runDesktopShellRuntimeSchedulerCycle as runDesktopShellRuntimeIntegrationSchedulerCycle,
+  type DesktopShellRuntimeSchedulerCycleResult as DesktopShellRuntimeIntegrationSchedulerCycleResult,
+} from "./shell-local-bridge-desktop-runtime.scheduler.js";
+export {
+  runDesktopShellRuntimeDriverCycle as runDesktopShellRuntimeIntegrationDriverCycle,
+  type DesktopShellRuntimeDriverCycleResult as DesktopShellRuntimeIntegrationDriverCycleResult,
+} from "./shell-local-bridge-desktop-runtime.driver.js";
+export {
+  runDesktopShellRuntimeTimerTick as runDesktopShellRuntimeIntegrationTimerTick,
+  resolveDesktopShellRuntimeTimerSnapshot as resolveDesktopShellRuntimeIntegrationTimerSnapshot,
+  type DesktopShellRuntimeTimerTickResult as DesktopShellRuntimeIntegrationTimerTickResult,
+  type DesktopShellRuntimeTimerSnapshot as DesktopShellRuntimeIntegrationTimerSnapshot,
+} from "./shell-local-bridge-desktop-runtime.timer.js";
+export {
+  startDesktopShellRuntimeRunner as startDesktopShellRuntimeIntegrationRunner,
+  tickDesktopShellRuntimeRunner as runDesktopShellRuntimeIntegrationRunnerTick,
+  stopDesktopShellRuntimeRunner as stopDesktopShellRuntimeIntegrationRunner,
+  resolveDesktopShellRuntimeRunnerSnapshot as resolveDesktopShellRuntimeIntegrationRunnerSnapshot,
+  type DesktopShellRuntimeRunnerTickResult as DesktopShellRuntimeIntegrationRunnerTickResult,
+  type DesktopShellRuntimeRunnerSnapshot as DesktopShellRuntimeIntegrationRunnerSnapshot,
+} from "./shell-local-bridge-desktop-runtime.runner.js";
+export {
+  startDesktopShellRuntimeHost as startDesktopShellRuntimeIntegrationHost,
+  wakeDesktopShellRuntimeHost as runDesktopShellRuntimeIntegrationHostWake,
+  stopDesktopShellRuntimeHost as stopDesktopShellRuntimeIntegrationHost,
+  resolveDesktopShellRuntimeHostSnapshot as resolveDesktopShellRuntimeIntegrationHostSnapshot,
+  type DesktopShellRuntimeHostWakeResult as DesktopShellRuntimeIntegrationHostWakeResult,
+  type DesktopShellRuntimeHostSnapshot as DesktopShellRuntimeIntegrationHostSnapshot,
+} from "./shell-local-bridge-desktop-runtime.host.js";
+export {
+  acquireDesktopShellRuntimeService as startDesktopShellRuntimeIntegrationService,
+  wakeDesktopShellRuntimeService as runDesktopShellRuntimeIntegrationServiceWake,
+  releaseDesktopShellRuntimeService as stopDesktopShellRuntimeIntegrationService,
+  resolveDesktopShellRuntimeServiceSnapshot as resolveDesktopShellRuntimeIntegrationServiceSnapshot,
+  type DesktopShellRuntimeServiceWakeResult as DesktopShellRuntimeIntegrationServiceWakeResult,
+  type DesktopShellRuntimeServiceSnapshot as DesktopShellRuntimeIntegrationServiceSnapshot,
+} from "./shell-local-bridge-desktop-runtime.service.js";
+export {
+  bootDesktopShellRuntimeLifecycle as bootDesktopShellRuntimeIntegrationLifecycle,
+  resumeDesktopShellRuntimeLifecycle as runDesktopShellRuntimeIntegrationLifecycleWake,
+  suspendDesktopShellRuntimeLifecycle as suspendDesktopShellRuntimeIntegrationLifecycle,
+  shutdownDesktopShellRuntimeLifecycle as stopDesktopShellRuntimeIntegrationLifecycle,
+  resolveDesktopShellRuntimeLifecycleSnapshot as resolveDesktopShellRuntimeIntegrationLifecycleSnapshot,
+  type DesktopShellRuntimeLifecycleResult as DesktopShellRuntimeIntegrationLifecycleResult,
+  type DesktopShellRuntimeLifecycleSnapshot as DesktopShellRuntimeIntegrationLifecycleSnapshot,
+} from "./shell-local-bridge-desktop-runtime.lifecycle.js";
+export {
+  startDesktopShellRuntimeBootstrap as startDesktopShellRuntimeIntegrationBootstrap,
+  wakeDesktopShellRuntimeBootstrap as runDesktopShellRuntimeIntegrationBootstrapWake,
+  suspendDesktopShellRuntimeBootstrap as suspendDesktopShellRuntimeIntegrationBootstrap,
+  stopDesktopShellRuntimeBootstrap as stopDesktopShellRuntimeIntegrationBootstrap,
+  resolveDesktopShellRuntimeBootstrapSnapshot as resolveDesktopShellRuntimeIntegrationBootstrapSnapshot,
+  type DesktopShellRuntimeBootstrapResult as DesktopShellRuntimeIntegrationBootstrapResult,
+  type DesktopShellRuntimeBootstrapSnapshot as DesktopShellRuntimeIntegrationBootstrapSnapshot,
+} from "./shell-local-bridge-desktop-runtime.bootstrap.js";
+export {
+  startDesktopShellRuntimeAppOwner as startDesktopShellRuntimeIntegrationAppOwner,
+  wakeDesktopShellRuntimeAppOwner as runDesktopShellRuntimeIntegrationAppOwnerWake,
+  backgroundDesktopShellRuntimeAppOwner as backgroundDesktopShellRuntimeIntegrationAppOwner,
+  stopDesktopShellRuntimeAppOwner as stopDesktopShellRuntimeIntegrationAppOwner,
+  resolveDesktopShellRuntimeAppOwnerSnapshot as resolveDesktopShellRuntimeIntegrationAppOwnerSnapshot,
+  type DesktopShellRuntimeAppOwnerResult as DesktopShellRuntimeIntegrationAppOwnerResult,
+  type DesktopShellRuntimeAppOwnerSnapshot as DesktopShellRuntimeIntegrationAppOwnerSnapshot,
+} from "./shell-local-bridge-desktop-runtime.app-owner.js";
+export {
+  startDesktopShellRuntimeShellOwner as startDesktopShellRuntimeIntegrationShellOwner,
+  wakeDesktopShellRuntimeShellOwner as runDesktopShellRuntimeIntegrationShellOwnerWake,
+  backgroundDesktopShellRuntimeShellOwner as backgroundDesktopShellRuntimeIntegrationShellOwner,
+  stopDesktopShellRuntimeShellOwner as stopDesktopShellRuntimeIntegrationShellOwner,
+  resolveDesktopShellRuntimeShellOwnerSnapshot as resolveDesktopShellRuntimeIntegrationShellOwnerSnapshot,
+  type DesktopShellRuntimeShellOwnerResult as DesktopShellRuntimeIntegrationShellOwnerResult,
+  type DesktopShellRuntimeShellOwnerSnapshot as DesktopShellRuntimeIntegrationShellOwnerSnapshot,
+} from "./shell-local-bridge-desktop-runtime.shell-owner.js";
+export {
+  startDesktopShellRuntimeProcessHost as startDesktopShellRuntimeIntegrationProcessHost,
+  foregroundDesktopShellRuntimeProcessHost as runDesktopShellRuntimeIntegrationProcessHostWake,
+  backgroundDesktopShellRuntimeProcessHost as backgroundDesktopShellRuntimeIntegrationProcessHost,
+  stopDesktopShellRuntimeProcessHost as stopDesktopShellRuntimeIntegrationProcessHost,
+  resolveDesktopShellRuntimeProcessHostSnapshot as resolveDesktopShellRuntimeIntegrationProcessHostSnapshot,
+  type DesktopShellRuntimeProcessHostResult as DesktopShellRuntimeIntegrationProcessHostResult,
+  type DesktopShellRuntimeProcessHostSnapshot as DesktopShellRuntimeIntegrationProcessHostSnapshot,
+} from "./shell-local-bridge-desktop-runtime.process-host.js";
+export {
+  dispatchDesktopShellRuntimeProcessEvent as dispatchDesktopShellRuntimeIntegrationProcessEvent,
+  resolveDesktopShellRuntimeProcessEventSnapshot as resolveDesktopShellRuntimeIntegrationProcessEventSnapshot,
+  type DesktopShellRuntimeProcessEventOptions as DesktopShellRuntimeIntegrationProcessEventOptions,
+  type DesktopShellRuntimeProcessEventResult as DesktopShellRuntimeIntegrationProcessEventResult,
+  type DesktopShellRuntimeProcessEventSnapshot as DesktopShellRuntimeIntegrationProcessEventSnapshot,
+  type DesktopShellRuntimeProcessEventType as DesktopShellRuntimeIntegrationProcessEventType,
+} from "./shell-local-bridge-desktop-runtime.process-events.js";
+export {
+  dispatchDesktopShellRuntimeNativeProcessEvent as dispatchDesktopShellRuntimeIntegrationNativeProcessEvent,
+  resolveDesktopShellRuntimeNativeProcessEventSnapshot as resolveDesktopShellRuntimeIntegrationNativeProcessEventSnapshot,
+  type DesktopShellRuntimeNativeProcessEventOptions as DesktopShellRuntimeIntegrationNativeProcessEventOptions,
+  type DesktopShellRuntimeNativeProcessEventResult as DesktopShellRuntimeIntegrationNativeProcessEventResult,
+  type DesktopShellRuntimeNativeProcessEventSnapshot as DesktopShellRuntimeIntegrationNativeProcessEventSnapshot,
+  type DesktopShellRuntimeNativeProcessEventType as DesktopShellRuntimeIntegrationNativeProcessEventType,
+} from "./shell-local-bridge-desktop-runtime.native-process-events.js";

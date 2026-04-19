@@ -20,6 +20,7 @@ import {
   previewGroundedRemMarkdown,
   writeBackfillDiaryEntries,
 } from "./doctor.memory-core-runtime.js";
+import { ErrorCodes, errorShape } from "../protocol/index.js";
 import { asRecord, normalizeTrimmedString } from "./record-shared.js";
 import type { GatewayRequestHandlers } from "./types.js";
 
@@ -29,6 +30,12 @@ const MANAGED_DEEP_SLEEP_CRON_NAME = "Memory Dreaming Promotion";
 const MANAGED_DEEP_SLEEP_CRON_TAG = "[managed-by=memory-core.short-term-promotion]";
 const DEEP_SLEEP_SYSTEM_EVENT_TEXT = "__openclaw_memory_core_short_term_promotion_dream__";
 const DREAM_DIARY_FILE_NAMES = ["DREAMS.md", "dreams.md"] as const;
+const SANJIN_DREAMING_SHADOW_STATUS_RELATIVE_PATH = path.join(
+  "sanjin",
+  "memory",
+  "reports",
+  "dreaming_lane_shadow_status.json",
+);
 
 type DoctorMemoryDreamingPhasePayload = {
   enabled: boolean;
@@ -138,6 +145,82 @@ export type DoctorMemoryDreamActionPayload = {
 function extractIsoDayFromPath(filePath: string): string | null {
   const match = filePath.replaceAll("\\", "/").match(/(\d{4}-\d{2}-\d{2})\.md$/i);
   return match?.[1] ?? null;
+}
+
+async function readJsonObject(filePath: string): Promise<Record<string, unknown> | null> {
+  try {
+    const raw = await fs.readFile(filePath, "utf-8");
+    const payload = JSON.parse(raw) as unknown;
+    return asRecord(payload);
+  } catch {
+    return null;
+  }
+}
+
+async function readSanjinDreamingShadowStatus(
+  workspaceDir: string | null | undefined,
+): Promise<Record<string, unknown> | null> {
+  const normalized = normalizeTrimmedString(workspaceDir);
+  if (!normalized) {
+    return null;
+  }
+  const statusPath = path.join(normalized, SANJIN_DREAMING_SHADOW_STATUS_RELATIVE_PATH);
+  return readJsonObject(statusPath);
+}
+
+async function readSanjinDreamingShadowDiary(
+  shadowStatus: Record<string, unknown> | null,
+): Promise<Omit<DoctorMemoryDreamDiaryPayload, "agentId"> | null> {
+  const diary = asRecord(shadowStatus?.dreamDiary);
+  const diaryPath = normalizeTrimmedString(diary?.path);
+  const found = diary?.found === true;
+  if (!diaryPath) {
+    return null;
+  }
+  if (!found) {
+    return {
+      found: false,
+      path: diaryPath,
+    };
+  }
+  try {
+    const content = await fs.readFile(diaryPath, "utf-8");
+    const stat = await fs.stat(diaryPath);
+    return {
+      found: true,
+      path: diaryPath,
+      content,
+      updatedAtMs: stat.mtimeMs,
+    };
+  } catch {
+    return {
+      found: false,
+      path: diaryPath,
+    };
+  }
+}
+
+function isSanjinDreamingNativeControlLocked(
+  shadowStatus: Record<string, unknown> | null,
+): boolean {
+  return shadowStatus?.shadowMode === true || shadowStatus?.nativeControlsEnabled === false;
+}
+
+function respondSanjinDreamingNativeControlLocked(
+  respond: Parameters<GatewayRequestHandlers[string]>[0]["respond"],
+  action:
+    | "backfillDreamDiary"
+    | "resetDreamDiary"
+    | "resetGroundedShortTerm",
+): void {
+  respond(
+    false,
+    undefined,
+    errorShape(
+      ErrorCodes.INVALID_REQUEST,
+      `Native dreaming action "${action}" is disabled while Sanjin Dreaming Lane shadow mode is active.`,
+    ),
+  );
 }
 
 function groundedMarkdownToDiaryLines(markdown: string): string[] {
@@ -770,6 +853,8 @@ export const doctorHandlers: GatewayRequestHandlers = {
   "doctor.memory.status": async ({ respond, context }) => {
     const cfg = loadConfig();
     const agentId = resolveDefaultAgentId(cfg);
+    const agentWorkspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+    const sanjinShadowStatus = await readSanjinDreamingShadowStatus(agentWorkspaceDir);
     const { manager, error } = await getActiveMemorySearchManager({
       cfg,
       agentId,
@@ -782,6 +867,7 @@ export const doctorHandlers: GatewayRequestHandlers = {
           ok: false,
           error: error ?? "memory search unavailable",
         },
+        ...(sanjinShadowStatus ? { dreaming: sanjinShadowStatus } : {}),
       };
       respond(true, payload, undefined);
       return;
@@ -827,24 +913,26 @@ export const doctorHandlers: GatewayRequestHandlers = {
         agentId,
         provider: status.provider,
         embedding,
-        dreaming: {
-          ...dreamingConfig,
-          ...storeStats,
-          phases: {
-            light: {
-              ...dreamingConfig.phases.light,
-              ...cronStatuses.light,
+        dreaming:
+          sanjinShadowStatus ??
+          ({
+            ...dreamingConfig,
+            ...storeStats,
+            phases: {
+              light: {
+                ...dreamingConfig.phases.light,
+                ...cronStatuses.light,
+              },
+              deep: {
+                ...dreamingConfig.phases.deep,
+                ...cronStatuses.deep,
+              },
+              rem: {
+                ...dreamingConfig.phases.rem,
+                ...cronStatuses.rem,
+              },
             },
-            deep: {
-              ...dreamingConfig.phases.deep,
-              ...cronStatuses.deep,
-            },
-            rem: {
-              ...dreamingConfig.phases.rem,
-              ...cronStatuses.rem,
-            },
-          },
-        },
+          } satisfies DoctorMemoryDreamingPayload),
       };
       respond(true, payload, undefined);
     } catch (err) {
@@ -864,6 +952,16 @@ export const doctorHandlers: GatewayRequestHandlers = {
     const cfg = loadConfig();
     const agentId = resolveDefaultAgentId(cfg);
     const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+    const sanjinShadowStatus = await readSanjinDreamingShadowStatus(workspaceDir);
+    const sanjinShadowDiary = await readSanjinDreamingShadowDiary(sanjinShadowStatus);
+    if (sanjinShadowDiary) {
+      const payload: DoctorMemoryDreamDiaryPayload = {
+        agentId,
+        ...sanjinShadowDiary,
+      };
+      respond(true, payload, undefined);
+      return;
+    }
     const dreamDiary = await readDreamDiary(workspaceDir);
     const payload: DoctorMemoryDreamDiaryPayload = {
       agentId,
@@ -875,6 +973,11 @@ export const doctorHandlers: GatewayRequestHandlers = {
     const cfg = loadConfig();
     const agentId = resolveDefaultAgentId(cfg);
     const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+    const sanjinShadowStatus = await readSanjinDreamingShadowStatus(workspaceDir);
+    if (isSanjinDreamingNativeControlLocked(sanjinShadowStatus)) {
+      respondSanjinDreamingNativeControlLocked(respond, "backfillDreamDiary");
+      return;
+    }
     const memoryDir = path.join(workspaceDir, "memory");
     const sourceFiles = await listWorkspaceDailyFiles(memoryDir);
     if (sourceFiles.length === 0) {
@@ -933,6 +1036,11 @@ export const doctorHandlers: GatewayRequestHandlers = {
     const cfg = loadConfig();
     const agentId = resolveDefaultAgentId(cfg);
     const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+    const sanjinShadowStatus = await readSanjinDreamingShadowStatus(workspaceDir);
+    if (isSanjinDreamingNativeControlLocked(sanjinShadowStatus)) {
+      respondSanjinDreamingNativeControlLocked(respond, "resetDreamDiary");
+      return;
+    }
     const removed = await removeBackfillDiaryEntries({ workspaceDir });
     const dreamDiary = await readDreamDiary(workspaceDir);
     const payload: DoctorMemoryDreamActionPayload = {
@@ -948,6 +1056,11 @@ export const doctorHandlers: GatewayRequestHandlers = {
     const cfg = loadConfig();
     const agentId = resolveDefaultAgentId(cfg);
     const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+    const sanjinShadowStatus = await readSanjinDreamingShadowStatus(workspaceDir);
+    if (isSanjinDreamingNativeControlLocked(sanjinShadowStatus)) {
+      respondSanjinDreamingNativeControlLocked(respond, "resetGroundedShortTerm");
+      return;
+    }
     const removed = await removeGroundedShortTermCandidates({ workspaceDir });
     const payload: DoctorMemoryDreamActionPayload = {
       agentId,

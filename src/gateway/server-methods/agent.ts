@@ -63,6 +63,7 @@ import {
   loadGatewaySessionRow,
   loadSessionEntry,
   migrateAndPruneGatewaySessionStoreKey,
+  resolveGatewayModelSupportsDocuments,
   resolveGatewayModelSupportsImages,
   resolveSessionModelRef,
 } from "../session-utils.js";
@@ -361,6 +362,12 @@ export const agentHandlers: GatewayRequestHandlers = {
 
     let message = (request.message ?? "").trim();
     let images: Array<{ type: "image"; data: string; mimeType: string }> = [];
+    let documents: Array<{
+      type: "document";
+      data: string;
+      mimeType: "application/pdf";
+      fileName?: string;
+    }> = [];
     let imageOrder: PromptImageOrderEntry[] = [];
     if (normalizedAttachments.length > 0) {
       const requestedSessionKeyRaw =
@@ -383,15 +390,22 @@ export const agentHandlers: GatewayRequestHandlers = {
         provider: effectiveProvider,
         model: effectiveModel,
       });
+      const supportsDocuments = await resolveGatewayModelSupportsDocuments({
+        loadGatewayModelCatalog: context.loadGatewayModelCatalog,
+        provider: effectiveProvider,
+        model: effectiveModel,
+      });
 
       try {
         const parsed = await parseMessageWithAttachments(message, normalizedAttachments, {
-          maxBytes: 5_000_000,
+          maxBytes: 12 * 1024 * 1024,
           log: context.logGateway,
           supportsImages,
+          supportsDocuments,
         });
         message = parsed.message.trim();
         images = parsed.images;
+        documents = parsed.documents;
         imageOrder = parsed.imageOrder;
         // offloadedRefs are appended as text markers to `message`; the agent
         // runner will resolve them via detectAndLoadPromptImages.
@@ -801,6 +815,7 @@ export const agentHandlers: GatewayRequestHandlers = {
       ingressOpts: {
         message,
         images,
+        documents,
         imageOrder,
         provider: providerOverride,
         model: modelOverride,

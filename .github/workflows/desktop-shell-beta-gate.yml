@@ -1,0 +1,491 @@
+name: Desktop Shell Beta Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      handoff_target:
+        description: Which readiness label to compute after the shared beta gate passes
+        required: true
+        default: controlled_beta
+        type: choice
+        options:
+          - controlled_beta
+          - release_handoff
+      release_tag:
+        description: Optional release tag to bind the aggregated beta gate verdict to
+        required: false
+        type: string
+      expected_sha:
+        description: Optional commit sha to bind the aggregated beta gate verdict to
+        required: false
+        type: string
+      windows_msi_run_id:
+        description: Optional workflow run id that produced the windows-msi artifact for a real Windows shell trial
+        required: false
+        type: string
+      windows_msi_artifact:
+        description: Artifact name to download from the Windows MSI workflow run
+        required: false
+        default: windows-msi
+        type: string
+      windows_install_verification_run_id:
+        description: Optional workflow run id that already produced the windows-msi-install-verification artifact
+        required: false
+        type: string
+      windows_install_verification_artifact:
+        description: Artifact name to download from the Windows MSI workflow run
+        required: false
+        default: windows-msi-install-verification
+        type: string
+      windows_install_source:
+        description: Windows package source
+        required: true
+        default: msi
+        type: choice
+        options:
+          - msi
+          - winget
+      windows_mode:
+        description: Windows attach mode
+        required: true
+        default: local
+        type: choice
+        options:
+          - local
+          - remote
+      windows_confirmations_json:
+        description: JSON object containing Windows walkthrough confirmations
+        required: true
+        default: '{"firstOpenPassed":false,"hostStatusVisible":false,"desktopHealthReachable":false,"localActionResolvePassed":false,"exactTargetParityPassed":false,"repairRelaunchPassed":false,"governanceReachable":false}'
+        type: string
+      windows_session_key:
+        description: Optional Windows session key for exact target verification
+        required: false
+        type: string
+      windows_shell_action:
+        description: Optional Windows pending-action id for exact target verification
+        required: false
+        type: string
+      windows_shell_result_action:
+        description: Optional Windows result-action id for exact target verification
+        required: false
+        type: string
+      macos_install_source:
+        description: macOS package source
+        required: true
+        default: app
+        type: choice
+        options:
+          - app
+          - dmg
+      macos_mode:
+        description: macOS attach mode
+        required: true
+        default: local
+        type: choice
+        options:
+          - local
+          - remote
+      macos_confirmations_json:
+        description: JSON object containing macOS walkthrough confirmations
+        required: true
+        default: '{"coldStartPassed":false,"dashboardEntryPassed":false,"desktopHealthPassed":false,"pendingReopenPassed":false,"resultReopenPassed":false,"hostSummaryConsistent":false,"repairRelaunchPassed":false,"relaunchPassed":false,"removeReinstallPassed":false,"localActionResolvePassed":false,"governanceReachable":false}'
+        type: string
+      macos_session_key:
+        description: Optional macOS session key for exact target verification
+        required: false
+        type: string
+      macos_shell_action:
+        description: Optional macOS pending-action id for exact target verification
+        required: false
+        type: string
+      macos_shell_result_action:
+        description: Optional macOS result-action id for exact target verification
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  NODE_VERSION: "24.x"
+  PNPM_VERSION: "10.32.1"
+
+jobs:
+  windows_beta_verdict:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          install-bun: "false"
+          use-sticky-disk: "false"
+
+      - name: Resolve Windows confirmations
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const payload = JSON.parse(process.env.WINDOWS_CONFIRMATIONS_JSON ?? "{}");
+          const map = {
+            firstOpenPassed: "WINDOWS_FIRST_OPEN_PASSED",
+            hostStatusVisible: "WINDOWS_HOST_STATUS_VISIBLE",
+            desktopHealthReachable: "WINDOWS_DESKTOP_HEALTH_REACHABLE",
+            localActionResolvePassed: "WINDOWS_LOCAL_ACTION_RESOLVE_PASSED",
+            exactTargetParityPassed: "WINDOWS_EXACT_TARGET_PARITY_PASSED",
+            repairRelaunchPassed: "WINDOWS_REPAIR_RELAUNCH_PASSED",
+            governanceReachable: "WINDOWS_GOVERNANCE_REACHABLE",
+          };
+          const lines = Object.entries(map).map(([key, envKey]) => `${envKey}=${String(Boolean(payload[key]))}`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `${lines.join("\n")}\n`);
+          NODE
+        env:
+          WINDOWS_CONFIRMATIONS_JSON: ${{ inputs.windows_confirmations_json }}
+
+      - name: Setup WiX Toolset
+        if: ${{ inputs.windows_msi_run_id == '' && inputs.windows_install_verification_run_id == '' }}
+        shell: pwsh
+        run: |
+          $wixVersion = "5.0.2"
+          dotnet tool install --global wix --version $wixVersion
+          wix extension add "WixToolset.Util.wixext/$wixVersion"
+
+      - name: Build runtime + UI for local MSI trial
+        if: ${{ inputs.windows_msi_run_id == '' && inputs.windows_install_verification_run_id == '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm build
+          pnpm ui:build
+
+      - name: Build Windows MSI on runner
+        if: ${{ inputs.windows_msi_run_id == '' && inputs.windows_install_verification_run_id == '' }}
+        shell: pwsh
+        run: |
+          $json = node --import tsx scripts/build-windows-msi.ts
+          $json | Out-File -FilePath "$env:RUNNER_TEMP\windows-msi.json" -Encoding utf8
+          $artifactPath = node -e "const fs=require('node:fs'); const parsed=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); process.stdout.write(parsed.artifactPath);" "$env:RUNNER_TEMP\windows-msi.json"
+          if (-not $artifactPath) {
+            throw "Failed to resolve Windows MSI artifact path from windows:msi:build."
+          }
+          "WINDOWS_MSI_PATH=$artifactPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Download Windows MSI artifact
+        if: ${{ inputs.windows_msi_run_id != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.windows_msi_run_id }}
+          ARTIFACT_NAME: ${{ inputs.windows_msi_artifact }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/input/windows/msi
+          gh run download "$RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "$ARTIFACT_NAME" \
+            --dir artifacts/input/windows/msi
+          msi_path="$(find artifacts/input/windows/msi -name '*.msi' | head -n 1)"
+          if [ -z "$msi_path" ]; then
+            echo "Failed to locate an MSI in downloaded artifact."
+            exit 1
+          fi
+          echo "WINDOWS_MSI_PATH=$msi_path" >> "$GITHUB_ENV"
+
+      - name: Download Windows MSI install verification artifact
+        if: ${{ inputs.windows_install_verification_run_id != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.windows_install_verification_run_id }}
+          ARTIFACT_NAME: ${{ inputs.windows_install_verification_artifact }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/input/windows/install-verification
+          gh run download "$RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "$ARTIFACT_NAME" \
+            --dir artifacts/input/windows/install-verification
+          report_path="$(find artifacts/input/windows/install-verification -name '*.json' | head -n 1)"
+          if [ -z "$report_path" ]; then
+            echo "Failed to locate a JSON install verification report in downloaded artifact."
+            exit 1
+          fi
+          echo "WINDOWS_INSTALL_REPORT=$report_path" >> "$GITHUB_ENV"
+
+      - name: Run Windows MSI install verification on runner
+        if: ${{ inputs.windows_install_verification_run_id == '' && inputs.windows_msi_run_id != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${WINDOWS_MSI_PATH:-}" ]; then
+            echo "Real Windows shell trial requires a Windows MSI artifact path."
+            exit 1
+          fi
+          node --import tsx scripts/verify-windows-msi-install.ts \
+            --artifact-path "$WINDOWS_MSI_PATH" \
+            --timeout-ms 180000 \
+            --retry-attempts 15 \
+            --retry-delay-ms 2000 > artifacts/beta/windows-msi-install-verification.json
+          echo "WINDOWS_INSTALL_REPORT=artifacts/beta/windows-msi-install-verification.json" >> "$GITHUB_ENV"
+
+      - name: Validate Windows install verification input
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${WINDOWS_INSTALL_REPORT:-}" ]; then
+            echo "Provide a real MSI path by downloading one via windows_msi_run_id, or let this workflow build one on runner, or provide windows_install_verification_run_id for a precomputed install verification artifact."
+            exit 1
+          fi
+
+      - name: Generate Windows shell beta verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --import tsx scripts/verify-windows-shell-beta.ts \
+            --install-report "$WINDOWS_INSTALL_REPORT" \
+            --artifact-dir artifacts/beta \
+            --install-source "${{ inputs.windows_install_source }}" \
+            --mode "${{ inputs.windows_mode }}" \
+            --session-key "${{ inputs.windows_session_key }}" \
+            --shell-action "${{ inputs.windows_shell_action }}" \
+            --shell-result-action "${{ inputs.windows_shell_result_action }}" \
+            --first-open-passed "${WINDOWS_FIRST_OPEN_PASSED}" \
+            --host-status-visible "${WINDOWS_HOST_STATUS_VISIBLE}" \
+            --desktop-health-reachable "${WINDOWS_DESKTOP_HEALTH_REACHABLE}" \
+            --local-action-resolve-passed "${WINDOWS_LOCAL_ACTION_RESOLVE_PASSED}" \
+            --exact-target-parity-passed "${WINDOWS_EXACT_TARGET_PARITY_PASSED}" \
+            --repair-relaunch-passed "${WINDOWS_REPAIR_RELAUNCH_PASSED}" \
+            --governance-reachable "${WINDOWS_GOVERNANCE_REACHABLE}"
+
+      - name: Upload Windows MSI artifact
+        if: ${{ env.WINDOWS_MSI_PATH != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-msi
+          path: ${{ env.WINDOWS_MSI_PATH }}
+          if-no-files-found: error
+
+      - name: Upload Windows beta verdict artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-shell-beta
+          path: |
+            artifacts/beta/windows-shell-beta.json
+            artifacts/beta/windows-shell-beta.md
+          if-no-files-found: error
+
+      - name: Upload Windows MSI install verification artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-msi-install-verification
+          path: ${{ env.WINDOWS_INSTALL_REPORT }}
+          if-no-files-found: error
+
+  macos_beta_verdict:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          install-bun: "false"
+          use-sticky-disk: "false"
+
+      - name: Resolve macOS confirmations
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const payload = JSON.parse(process.env.MACOS_CONFIRMATIONS_JSON ?? "{}");
+          const map = {
+            coldStartPassed: "MACOS_COLD_START_PASSED",
+            dashboardEntryPassed: "MACOS_DASHBOARD_ENTRY_PASSED",
+            desktopHealthPassed: "MACOS_DESKTOP_HEALTH_PASSED",
+            pendingReopenPassed: "MACOS_PENDING_REOPEN_PASSED",
+            resultReopenPassed: "MACOS_RESULT_REOPEN_PASSED",
+            hostSummaryConsistent: "MACOS_HOST_SUMMARY_CONSISTENT",
+            repairRelaunchPassed: "MACOS_REPAIR_RELAUNCH_PASSED",
+            relaunchPassed: "MACOS_RELAUNCH_PASSED",
+            removeReinstallPassed: "MACOS_REMOVE_REINSTALL_PASSED",
+            localActionResolvePassed: "MACOS_LOCAL_ACTION_RESOLVE_PASSED",
+            governanceReachable: "MACOS_GOVERNANCE_REACHABLE",
+          };
+          const lines = Object.entries(map).map(([key, envKey]) => `${envKey}=${String(Boolean(payload[key]))}`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `${lines.join("\n")}\n`);
+          NODE
+        env:
+          MACOS_CONFIRMATIONS_JSON: ${{ inputs.macos_confirmations_json }}
+
+      - name: Generate macOS shell beta verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --import tsx scripts/verify-mac-shell-beta.ts \
+            --artifact-dir artifacts/beta \
+            --install-source "${{ inputs.macos_install_source }}" \
+            --mode "${{ inputs.macos_mode }}" \
+            --session-key "${{ inputs.macos_session_key }}" \
+            --shell-action "${{ inputs.macos_shell_action }}" \
+            --shell-result-action "${{ inputs.macos_shell_result_action }}" \
+            --cold-start-passed "${MACOS_COLD_START_PASSED}" \
+            --dashboard-entry-passed "${MACOS_DASHBOARD_ENTRY_PASSED}" \
+            --desktop-health-passed "${MACOS_DESKTOP_HEALTH_PASSED}" \
+            --pending-reopen-passed "${MACOS_PENDING_REOPEN_PASSED}" \
+            --result-reopen-passed "${MACOS_RESULT_REOPEN_PASSED}" \
+            --host-summary-consistent "${MACOS_HOST_SUMMARY_CONSISTENT}" \
+            --repair-relaunch-passed "${MACOS_REPAIR_RELAUNCH_PASSED}" \
+            --relaunch-passed "${MACOS_RELAUNCH_PASSED}" \
+            --remove-reinstall-passed "${MACOS_REMOVE_REINSTALL_PASSED}" \
+            --local-action-resolve-passed "${MACOS_LOCAL_ACTION_RESOLVE_PASSED}" \
+            --governance-reachable "${MACOS_GOVERNANCE_REACHABLE}"
+
+      - name: Upload macOS beta verdict artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-shell-beta
+          path: |
+            artifacts/beta/macos-shell-beta.json
+            artifacts/beta/macos-shell-beta.md
+          if-no-files-found: error
+
+  aggregate_beta_gate:
+    needs:
+      - windows_beta_verdict
+      - macos_beta_verdict
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          install-bun: "false"
+          use-sticky-disk: "false"
+
+      - name: Download Windows beta verdict
+        uses: actions/download-artifact@v5
+        with:
+          name: windows-shell-beta
+          path: artifacts/beta/windows
+
+      - name: Download macOS beta verdict
+        uses: actions/download-artifact@v5
+        with:
+          name: macos-shell-beta
+          path: artifacts/beta/macos
+
+      - name: Resolve verdict artifact paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "WINDOWS_BETA_REPORT=$(find artifacts/beta/windows -name 'windows-shell-beta.json' | head -n 1)" >> "$GITHUB_ENV"
+          echo "MACOS_BETA_REPORT=$(find artifacts/beta/macos -name 'macos-shell-beta.json' | head -n 1)" >> "$GITHUB_ENV"
+
+      - name: Aggregate dual-platform beta gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --import tsx scripts/verify-desktop-shell-beta-gate.ts \
+            --artifact-dir artifacts/beta \
+            --windows-report "$WINDOWS_BETA_REPORT" \
+            --mac-report "$MACOS_BETA_REPORT"
+
+      - name: Compute release handoff readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --import tsx scripts/verify-desktop-shell-beta-release-handoff.ts \
+            --artifact-dir artifacts/beta \
+            --target "${{ inputs.handoff_target }}"
+
+      - name: Compute release binding artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_sha="${{ inputs.expected_sha }}"
+          if [ -z "$expected_sha" ]; then
+            expected_sha="${GITHUB_SHA}"
+          fi
+          node --import tsx scripts/verify-desktop-shell-beta-release-binding.ts \
+            --artifact-dir artifacts/beta \
+            --release-tag "${{ inputs.release_tag }}" \
+            --expected-sha "$expected_sha" \
+            --beta-gate-run-id "${GITHUB_RUN_ID}" \
+            --beta-gate-workflow-name "${GITHUB_WORKFLOW}"
+
+      - name: Upload aggregated beta gate artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-shell-beta-gate
+          path: |
+            artifacts/beta/desktop-shell-beta-gate.json
+            artifacts/beta/desktop-shell-beta-gate.md
+          if-no-files-found: error
+
+      - name: Upload release handoff artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-shell-beta-release-handoff
+          path: |
+            artifacts/beta/desktop-shell-beta-release-handoff.json
+            artifacts/beta/desktop-shell-beta-release-handoff.md
+          if-no-files-found: error
+
+      - name: Upload release binding artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-shell-beta-release-binding
+          path: |
+            artifacts/beta/desktop-shell-beta-release-binding.json
+            artifacts/beta/desktop-shell-beta-release-binding.md
+          if-no-files-found: error
+
+      - name: Summarize desktop shell beta gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const gate = JSON.parse(fs.readFileSync("artifacts/beta/desktop-shell-beta-gate.json", "utf8"));
+          const handoff = JSON.parse(fs.readFileSync("artifacts/beta/desktop-shell-beta-release-handoff.json", "utf8"));
+          const binding = JSON.parse(fs.readFileSync("artifacts/beta/desktop-shell-beta-release-binding.json", "utf8"));
+          const lines = [
+            "## Desktop shell beta gate",
+            "",
+            `- gate reached: ${gate.gateReached ? "yes" : "no"}`,
+            `- host path passed: ${gate.hostPathPassed ? "yes" : "no"}`,
+            `- shell path passed: ${gate.shellPathPassed ? "yes" : "no"}`,
+            `- installer path passed: ${gate.installerPathPassed ? "yes" : "no"}`,
+            `- governance reachable: ${gate.governanceReachable ? "yes" : "no"}`,
+            `- exact target parity passed: ${gate.exactTargetParityPassed ? "yes" : "no"}`,
+            `- repair / relaunch passed: ${gate.repairRelaunchPassed ? "yes" : "no"}`,
+            "",
+            "## Release handoff",
+            "",
+            `- target: ${handoff.target}`,
+            `- status: ${handoff.status}`,
+            "",
+            "## Release binding",
+            "",
+            `- release tag: ${binding.releaseTag ?? "(none)"}`,
+            `- expected sha: ${binding.expectedSha ?? "(none)"}`,
+            `- beta gate run id: ${binding.betaGateRunId ?? "(none)"}`,
+          ];
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${lines.join("\n")}\n`);
+          NODE

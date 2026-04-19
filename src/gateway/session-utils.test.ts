@@ -16,6 +16,7 @@ import {
   migrateAndPruneGatewaySessionStoreKey,
   parseGroupKey,
   pruneLegacyStoreKeys,
+  resolveGatewayModelSupportsDocuments,
   resolveGatewayModelSupportsImages,
   resolveGatewaySessionStoreTarget,
   resolveSessionModelIdentityRef,
@@ -973,5 +974,53 @@ describe("resolveGatewayModelSupportsImages", () => {
         ],
       }),
     ).resolves.toBe(true);
+  });
+});
+
+describe("resolveGatewayModelSupportsDocuments", () => {
+  test("returns true when catalog says the model accepts document input", async () => {
+    await expect(
+      resolveGatewayModelSupportsDocuments({
+        model: "claude-sonnet-4-6",
+        provider: "anthropic",
+        loadGatewayModelCatalog: async () => [
+          {
+            id: "claude-sonnet-4-6",
+            name: "Claude Sonnet 4.6",
+            provider: "anthropic",
+            input: ["text", "document"],
+          },
+        ],
+      }),
+    ).resolves.toBe(true);
+  });
+
+  test("uses anthropic heuristics when catalog metadata is stale", async () => {
+    await expect(
+      resolveGatewayModelSupportsDocuments({
+        model: "claude-sonnet-4-6",
+        provider: "anthropic",
+        loadGatewayModelCatalog: async () => [
+          {
+            id: "claude-sonnet-4-6",
+            name: "Claude Sonnet 4.6",
+            provider: "anthropic",
+            input: ["text"],
+          },
+        ],
+      }),
+    ).resolves.toBe(true);
+  });
+
+  test("fails closed for unsupported providers even when catalog claims document input", async () => {
+    await expect(
+      resolveGatewayModelSupportsDocuments({
+        model: "gpt-5.4",
+        provider: "openai",
+        loadGatewayModelCatalog: async () => [
+          { id: "gpt-5.4", name: "GPT-5.4", provider: "openai", input: ["text", "document"] },
+        ],
+      }),
+    ).resolves.toBe(false);
   });
 });

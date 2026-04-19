@@ -12,6 +12,10 @@ export const NODE_WINDOWS_TASK_NAME = "OpenClaw Node";
 export const NODE_SERVICE_MARKER = "openclaw";
 export const NODE_SERVICE_KIND = "node";
 export const NODE_WINDOWS_TASK_SCRIPT_NAME = "node.cmd";
+export const WINDOWS_COMPANION_WINDOWS_TASK_NAME = "OpenClaw Windows Companion";
+export const WINDOWS_COMPANION_SERVICE_MARKER = "openclaw";
+export const WINDOWS_COMPANION_SERVICE_KIND = "windows-companion";
+export const WINDOWS_COMPANION_WINDOWS_TASK_SCRIPT_NAME = "windows-companion.cmd";
 export const LEGACY_GATEWAY_LAUNCH_AGENT_LABELS: string[] = [];
 export const LEGACY_GATEWAY_SYSTEMD_SERVICE_NAMES: string[] = ["clawdbot-gateway"];
 export const LEGACY_GATEWAY_WINDOWS_TASK_NAMES: string[] = [];
@@ -109,4 +113,31 @@ export function formatNodeServiceDescription(params?: { version?: string }): str
     return "OpenClaw Node Host";
   }
   return `OpenClaw Node Host (v${version})`;
+}
+
+export function resolveWindowsCompanionWindowsTaskName(profile?: string): string {
+  const normalized = normalizeGatewayProfile(profile);
+  if (!normalized) {
+    return WINDOWS_COMPANION_WINDOWS_TASK_NAME;
+  }
+  return `OpenClaw Windows Companion (${normalized})`;
+}
+
+export function formatWindowsCompanionServiceDescription(params?: {
+  profile?: string;
+  version?: string;
+}): string {
+  const profile = normalizeGatewayProfile(params?.profile);
+  const version = params?.version?.trim();
+  const parts: string[] = [];
+  if (profile) {
+    parts.push(`profile: ${profile}`);
+  }
+  if (version) {
+    parts.push(`v${version}`);
+  }
+  if (parts.length === 0) {
+    return "OpenClaw Windows Companion";
+  }
+  return `OpenClaw Windows Companion (${parts.join(", ")})`;
 }

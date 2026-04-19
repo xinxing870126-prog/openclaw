@@ -10,6 +10,7 @@ import type { GatewayWsClient } from "./server/ws-types.js";
 import { logWs, shouldLogWs, summarizeAgentEventForWsLog } from "./ws-log.js";
 
 const EVENT_SCOPE_GUARDS: Record<string, string[]> = {
+  "localBridge.action.requested": [WRITE_SCOPE],
   "exec.approval.requested": [APPROVALS_SCOPE],
   "exec.approval.resolved": [APPROVALS_SCOPE],
   "plugin.approval.requested": [APPROVALS_SCOPE],

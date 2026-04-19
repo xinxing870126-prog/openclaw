@@ -10,7 +10,11 @@ import { normalizeLowercaseStringOrEmpty } from "../shared/string-coerce.js";
 import { sleep } from "../utils.js";
 import { parseCmdScriptCommandLine, quoteCmdScriptArg } from "./cmd-argv.js";
 import { assertNoCmdLineBreak, parseCmdSetAssignment, renderCmdSetAssignment } from "./cmd-set.js";
-import { resolveGatewayServiceDescription, resolveGatewayWindowsTaskName } from "./constants.js";
+import {
+  WINDOWS_COMPANION_SERVICE_KIND,
+  resolveGatewayServiceDescription,
+  resolveGatewayWindowsTaskName,
+} from "./constants.js";
 import { formatLine, writeFormattedLines } from "./output.js";
 import { resolveGatewayStateDir } from "./paths.js";
 import { parseKeyValueOutput } from "./runtime-parse.js";
@@ -26,6 +30,10 @@ import type {
   GatewayServiceRenderArgs,
   GatewayServiceRestartResult,
 } from "./service-types.js";
+import {
+  renderPowerShellWindowlessCommand,
+  renderVbsWindowlessLauncher,
+} from "../windows-companion/tray.js";
 
 function resolveTaskName(env: GatewayServiceEnv): string {
   const override = env.OPENCLAW_WINDOWS_TASK_NAME?.trim();
@@ -79,9 +87,26 @@ function sanitizeWindowsFilename(value: string): string {
   return value.replace(/[<>:"/\\|?*]/g, "_").replace(/\p{Cc}/gu, "_");
 }
 
-function resolveStartupEntryPath(env: GatewayServiceEnv): string {
+function isWindowlessCompanionService(env: GatewayServiceEnv): boolean {
+  return normalizeLowercaseStringOrEmpty(env.OPENCLAW_SERVICE_KIND) === WINDOWS_COMPANION_SERVICE_KIND;
+}
+
+function resolveStartupEntryBasePath(env: GatewayServiceEnv): string {
   const taskName = resolveTaskName(env);
-  return path.join(resolveWindowsStartupDir(env), `${sanitizeWindowsFilename(taskName)}.cmd`);
+  return path.join(resolveWindowsStartupDir(env), sanitizeWindowsFilename(taskName));
+}
+
+function resolveStartupEntryPath(env: GatewayServiceEnv): string {
+  const extension = isWindowlessCompanionService(env) ? ".vbs" : ".cmd";
+  return `${resolveStartupEntryBasePath(env)}${extension}`;
+}
+
+function resolveStartupEntryCandidatePaths(env: GatewayServiceEnv): string[] {
+  const basePath = resolveStartupEntryBasePath(env);
+  const candidates = isWindowlessCompanionService(env)
+    ? [`${basePath}.vbs`, `${basePath}.cmd`]
+    : [`${basePath}.cmd`];
+  return Array.from(new Set(candidates));
 }
 
 // `/TR` is parsed by schtasks itself, while the generated `gateway.cmd` line is parsed by cmd.exe.
@@ -262,12 +287,21 @@ function buildTaskScript({
       lines.push(renderCmdSetAssignment(key, value));
     }
   }
-  const command = programArguments.map(quoteCmdScriptArg).join(" ");
+  const command = isWindowlessCompanionService(environment ?? {})
+    ? renderPowerShellWindowlessCommand(programArguments)
+    : programArguments.map(quoteCmdScriptArg).join(" ");
   lines.push(command);
   return `${lines.join("\r\n")}\r\n`;
 }
 
-function buildStartupLauncherScript(params: { description?: string; scriptPath: string }): string {
+function buildStartupLauncherScript(params: {
+  description?: string;
+  env: GatewayServiceEnv;
+  scriptPath: string;
+}): string {
+  if (isWindowlessCompanionService(params.env)) {
+    return renderVbsWindowlessLauncher(params.scriptPath);
+  }
   const lines = ["@echo off"];
   const trimmedDescription = params.description?.trim();
   if (trimmedDescription) {
@@ -288,12 +322,15 @@ async function assertSchtasksAvailable() {
 }
 
 async function isStartupEntryInstalled(env: GatewayServiceEnv): Promise<boolean> {
-  try {
-    await fs.access(resolveStartupEntryPath(env));
-    return true;
-  } catch {
-    return false;
+  for (const startupEntryPath of resolveStartupEntryCandidatePaths(env)) {
+    try {
+      await fs.access(startupEntryPath);
+      return true;
+    } catch {
+      // continue
+    }
   }
+  return false;
 }
 
 async function isRegisteredScheduledTask(env: GatewayServiceEnv): Promise<boolean> {
@@ -660,8 +697,15 @@ async function activateScheduledTask(params: {
     if (shouldFallbackToStartupEntry({ code: create.code, detail })) {
       const startupEntryPath = resolveStartupEntryPath(params.env);
       await fs.mkdir(path.dirname(startupEntryPath), { recursive: true });
+      for (const candidatePath of resolveStartupEntryCandidatePaths(params.env)) {
+        if (candidatePath === startupEntryPath) {
+          continue;
+        }
+        await fs.rm(candidatePath, { force: true }).catch(() => undefined);
+      }
       const launcher = buildStartupLauncherScript({
         description: taskDescription,
+        env: params.env,
         scriptPath: params.scriptPath,
       });
       await fs.writeFile(startupEntryPath, launcher, "utf8");
@@ -715,11 +759,12 @@ export async function uninstallScheduledTask({
     await execSchtasks(["/Delete", "/F", "/TN", taskName]);
   }
 
-  const startupEntryPath = resolveStartupEntryPath(env);
-  try {
-    await fs.unlink(startupEntryPath);
-    stdout.write(`${formatLine("Removed Windows login item", startupEntryPath)}\n`);
-  } catch {}
+  for (const startupEntryPath of resolveStartupEntryCandidatePaths(env)) {
+    try {
+      await fs.unlink(startupEntryPath);
+      stdout.write(`${formatLine("Removed Windows login item", startupEntryPath)}\n`);
+    } catch {}
+  }
 
   const scriptPath = resolveTaskScriptPath(env);
   try {
@@ -817,6 +862,18 @@ export async function isScheduledTaskInstalled(args: GatewayServiceEnvArgs): Pro
     return true;
   }
   return await isStartupEntryInstalled(effectiveEnv);
+}
+
+export async function readScheduledTaskInstallMode(
+  env: GatewayServiceEnv = process.env as GatewayServiceEnv,
+): Promise<"schtasks" | "startup_folder" | null> {
+  if (await isRegisteredScheduledTask(env)) {
+    return "schtasks";
+  }
+  if (await isStartupEntryInstalled(env)) {
+    return "startup_folder";
+  }
+  return null;
 }
 
 export async function readScheduledTaskRuntime(

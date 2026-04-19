@@ -1136,6 +1136,55 @@ export async function resolveGatewayModelSupportsImages(params: {
   }
 }
 
+export async function resolveGatewayModelSupportsDocuments(params: {
+  loadGatewayModelCatalog: () => Promise<ModelCatalogEntry[]>;
+  provider?: string;
+  model?: string;
+}): Promise<boolean> {
+  if (!params.model) {
+    return false;
+  }
+
+  try {
+    const catalog = await params.loadGatewayModelCatalog();
+    const modelEntry = catalog.find(
+      (entry) =>
+        entry.id === params.model && (!params.provider || entry.provider === params.provider),
+    );
+    const normalizedProvider = normalizeOptionalLowercaseString(params.provider);
+    const normalizedCandidates = [
+      normalizeLowercaseStringOrEmpty(params.model),
+      normalizeLowercaseStringOrEmpty(modelEntry?.name),
+    ].filter(Boolean);
+    const providerAllowsNativeDocuments =
+      normalizedProvider === "anthropic" || normalizedProvider === "google";
+    if (providerAllowsNativeDocuments && modelEntry?.input?.includes("document")) {
+      return true;
+    }
+    if (
+      normalizedProvider === "anthropic" &&
+      normalizedCandidates.some(
+        (candidate) =>
+          candidate === "opus" ||
+          candidate === "sonnet" ||
+          candidate === "haiku" ||
+          candidate.startsWith("claude-"),
+      )
+    ) {
+      return true;
+    }
+    if (
+      normalizedProvider === "google" &&
+      normalizedCandidates.some((candidate) => candidate.startsWith("gemini"))
+    ) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 export function resolveSessionModelIdentityRef(
   cfg: OpenClawConfig,
   entry?:

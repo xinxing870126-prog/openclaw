@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CURRENT_SESSION_VERSION, SessionManager } from "@mariozechner/pi-coding-agent";
-import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import { resolveAgentDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { resolveThinkingDefault } from "../../agents/model-selection.js";
 import { rewriteTranscriptEntriesInSessionFile } from "../../agents/pi-embedded-runner/transcript-rewrite.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
@@ -75,6 +75,7 @@ import { getMaxChatHistoryMessagesBytes } from "../server-constants.js";
 import {
   capArrayByJsonBytes,
   loadSessionEntry,
+  resolveGatewayModelSupportsDocuments,
   resolveGatewayModelSupportsImages,
   readSessionMessages,
   resolveSessionModelRef,
@@ -84,7 +85,7 @@ import { injectTimestamp, timestampOptsFromConfig } from "./agent-timestamp.js";
 import { setGatewayDedupeEntry } from "./agent-wait-dedupe.js";
 import { normalizeRpcAttachmentsToChatAttachments } from "./attachment-normalize.js";
 import { appendInjectedAssistantMessageToTranscript } from "./chat-transcript-inject.js";
-import { buildWebchatAudioContentBlocksFromReplyPayloads } from "./chat-webchat-media.js";
+import { buildWebchatMediaContentBlocksFromReplyPayloads } from "./chat-webchat-media.js";
 import type {
   GatewayRequestContext,
   GatewayRequestHandlerOptions,
@@ -106,6 +107,22 @@ type AbortedPartialSnapshot = {
   text: string;
   abortOrigin: AbortOrigin;
 };
+
+let mediaUnderstandingRuntimePromise: Promise<
+  typeof import("../../media-understanding/apply.runtime.js")
+> | null = null;
+let mediaUnderstandingRunnerPromise: Promise<typeof import("../../media-understanding/runner.js")> |
+  null = null;
+
+function loadMediaUnderstandingRuntime() {
+  mediaUnderstandingRuntimePromise ??= import("../../media-understanding/apply.runtime.js");
+  return mediaUnderstandingRuntimePromise;
+}
+
+function loadMediaUnderstandingRunner() {
+  mediaUnderstandingRunnerPromise ??= import("../../media-understanding/runner.js");
+  return mediaUnderstandingRunnerPromise;
+}
 
 type ChatAbortRequester = {
   connId?: string;
@@ -426,6 +443,43 @@ function resolveChatSendTranscriptMediaFields(savedImages: SavedMedia[]) {
     MediaType: mediaTypes[0],
     MediaTypes: mediaTypes,
   };
+}
+
+async function resolveChatSendImageFallbackModel(params: {
+  cfg: Parameters<typeof resolveSessionModelRef>[0];
+  agentDir?: string;
+  activeModel: { provider: string; model: string };
+}) {
+  const { resolveAutoImageModel } = await loadMediaUnderstandingRunner();
+  return await resolveAutoImageModel({
+    cfg: params.cfg,
+    agentDir: params.agentDir,
+    activeModel: params.activeModel,
+  });
+}
+
+async function applyChatSendImageFallback(params: {
+  ctx: MsgContext;
+  cfg: Parameters<typeof resolveSessionModelRef>[0];
+  agentDir?: string;
+  activeModel: { provider: string; model: string };
+  savedImages: SavedMedia[];
+}) {
+  if (params.savedImages.length === 0) {
+    return false;
+  }
+  Object.assign(params.ctx, resolveChatSendTranscriptMediaFields(params.savedImages), {
+    MediaUrl: params.savedImages[0]?.path,
+    MediaUrls: params.savedImages.map((entry) => entry.path),
+  });
+  const { applyMediaUnderstanding } = await loadMediaUnderstandingRuntime();
+  const result = await applyMediaUnderstanding({
+    ctx: params.ctx,
+    cfg: params.cfg,
+    agentDir: params.agentDir,
+    activeModel: params.activeModel,
+  });
+  return result.appliedImage;
 }
 
 function extractTranscriptUserText(content: unknown): string | undefined {
@@ -1495,8 +1549,16 @@ export const chatHandlers: GatewayRequestHandlers = {
 
     let parsedMessage = inboundMessage;
     let parsedImages: ChatImageContent[] = [];
+    let parsedDocuments: Array<{
+      type: "document";
+      data: string;
+      mimeType: "application/pdf";
+      fileName?: string;
+    }> = [];
     let parsedImageOrder: PromptImageOrderEntry[] = [];
     let parsedOffloadedRefs: OffloadedRef[] = [];
+    let parsedSupportsImages = true;
+    let parsedImageFallbackModel: { provider: string; model: string } | null = null;
 
     const timeoutMs = resolveAgentTimeoutMs({
       cfg,
@@ -1558,22 +1620,45 @@ export const chatHandlers: GatewayRequestHandlers = {
     if (normalizedAttachments.length > 0) {
       const sessionAgentId = resolveSessionAgentId({ sessionKey, config: cfg });
       const modelRef = resolveSessionModelRef(cfg, entry, sessionAgentId);
+      const agentDir = resolveAgentDir(cfg, sessionAgentId);
       const supportsImages = await resolveGatewayModelSupportsImages({
         loadGatewayModelCatalog: context.loadGatewayModelCatalog,
         provider: modelRef.provider,
         model: modelRef.model,
       });
+      const supportsDocuments = await resolveGatewayModelSupportsDocuments({
+        loadGatewayModelCatalog: context.loadGatewayModelCatalog,
+        provider: modelRef.provider,
+        model: modelRef.model,
+      });
+      const imageFallbackModel = supportsImages
+        ? null
+        : await resolveChatSendImageFallbackModel({
+            cfg,
+            agentDir: sessionAgentId ? undefined : agentDir,
+            activeModel: modelRef,
+          }).catch((err) => {
+            context.logGateway.warn(
+              `chat.send: failed to resolve image fallback model: ${formatForLog(err)}`,
+            );
+            return null;
+          });
+      const preserveImagesForFallback = !supportsImages && imageFallbackModel !== null;
 
       try {
         const parsed = await parseMessageWithAttachments(inboundMessage, normalizedAttachments, {
-          maxBytes: 5_000_000,
+          maxBytes: 12 * 1024 * 1024,
           log: context.logGateway,
-          supportsImages,
+          supportsImages: supportsImages || preserveImagesForFallback,
+          supportsDocuments,
         });
         parsedMessage = parsed.message;
         parsedImages = parsed.images;
+        parsedDocuments = parsed.documents;
         parsedImageOrder = parsed.imageOrder;
         parsedOffloadedRefs = parsed.offloadedRefs;
+        parsedSupportsImages = supportsImages;
+        parsedImageFallbackModel = imageFallbackModel;
       } catch (err) {
         // MediaOffloadError indicates a server-side storage fault (ENOSPC, EPERM,
         // etc.). All other errors are client-side input validation failures.
@@ -1673,6 +1758,31 @@ export const chatHandlers: GatewayRequestHandlers = {
         SenderUsername: clientInfo?.displayName,
         GatewayClientScopes: client?.connect?.scopes,
       };
+      if (
+        !parsedSupportsImages &&
+        parsedImageFallbackModel &&
+        (parsedImages.length > 0 || parsedOffloadedRefs.length > 0)
+      ) {
+        try {
+          const persistedImages = await persistedImagesPromise;
+          const appliedImageFallback = await applyChatSendImageFallback({
+            ctx,
+            cfg,
+            activeModel: parsedImageFallbackModel,
+            savedImages: persistedImages,
+          });
+          if (appliedImageFallback) {
+            ctx.BodyForAgent = injectTimestamp(
+              ctx.BodyForAgent ?? ctx.Body ?? messageForAgent,
+              timestampOptsFromConfig(cfg),
+            );
+          }
+        } catch (err) {
+          context.logGateway.warn(
+            `chat.send: image fallback failed, proceeding without image understanding: ${formatForLog(err)}`,
+          );
+        }
+      }
 
       const agentId = resolveSessionAgentId({
         sessionKey,
@@ -1775,7 +1885,8 @@ export const chatHandlers: GatewayRequestHandlers = {
         replyOptions: {
           runId: clientRunId,
           abortSignal: abortController.signal,
-          images: parsedImages.length > 0 ? parsedImages : undefined,
+          images: parsedSupportsImages && parsedImages.length > 0 ? parsedImages : undefined,
+          documents: parsedDocuments.length > 0 ? parsedDocuments : undefined,
           imageOrder: parsedImageOrder.length > 0 ? parsedImageOrder : undefined,
           onAgentRunStart: (runId) => {
             agentRunStarted = true;
@@ -1834,19 +1945,21 @@ export const chatHandlers: GatewayRequestHandlers = {
               const finalPayloads = deliveredReplies
                 .filter((entry) => entry.kind === "final")
                 .map((entry) => entry.payload);
-              const combinedReply = finalPayloads
-                .map((part) => part.text?.trim() ?? "")
+              const webchatMedia = await buildWebchatMediaContentBlocksFromReplyPayloads(
+                finalPayloads,
+              );
+              const combinedReply = webchatMedia.cleanedTexts
+                .map((part) => part.trim())
                 .filter(Boolean)
                 .join("\n\n")
                 .trim();
-              const audioBlocks = buildWebchatAudioContentBlocksFromReplyPayloads(finalPayloads);
               const assistantContent: Array<Record<string, unknown>> = [];
               if (combinedReply) {
                 assistantContent.push({ type: "text", text: combinedReply });
-              } else if (audioBlocks.length > 0) {
-                assistantContent.push({ type: "text", text: "Audio reply" });
+              } else if (webchatMedia.blocks.length > 0) {
+                assistantContent.push({ type: "text", text: "Attachment reply" });
               }
-              assistantContent.push(...audioBlocks);
+              assistantContent.push(...webchatMedia.blocks);
 
               let message: Record<string, unknown> | undefined;
               if (assistantContent.length > 0) {
@@ -1854,7 +1967,7 @@ export const chatHandlers: GatewayRequestHandlers = {
                   loadSessionEntry(sessionKey);
                 const sessionId = latestEntry?.sessionId ?? entry?.sessionId ?? clientRunId;
                 const transcriptFallbackText =
-                  combinedReply || (audioBlocks.length > 0 ? "Audio reply" : "");
+                  combinedReply || (webchatMedia.blocks.length > 0 ? "Attachment reply" : "");
                 const appended = appendAssistantTranscriptMessage({
                   message: transcriptFallbackText,
                   content: assistantContent,

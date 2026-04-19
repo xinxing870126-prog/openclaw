@@ -278,3 +278,16 @@ export async function resolveNodeProgramArguments(params: {
     nodePath: params.nodePath,
   });
 }
+
+export async function resolveWindowsCompanionProgramArguments(params: {
+  dev?: boolean;
+  runtime?: GatewayRuntimePreference;
+  nodePath?: string;
+} = {}): Promise<GatewayProgramArgs> {
+  return resolveCliProgramArguments({
+    args: ["windows-companion", "run"],
+    dev: params.dev,
+    runtime: params.runtime,
+    nodePath: params.nodePath,
+  });
+}

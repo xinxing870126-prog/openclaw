@@ -16,9 +16,13 @@ import {
   NODE_SERVICE_KIND,
   NODE_SERVICE_MARKER,
   NODE_WINDOWS_TASK_SCRIPT_NAME,
+  WINDOWS_COMPANION_SERVICE_KIND,
+  WINDOWS_COMPANION_SERVICE_MARKER,
+  WINDOWS_COMPANION_WINDOWS_TASK_SCRIPT_NAME,
   resolveNodeLaunchAgentLabel,
   resolveNodeSystemdServiceName,
   resolveNodeWindowsTaskName,
+  resolveWindowsCompanionWindowsTaskName,
 } from "./constants.js";
 
 export { isNodeVersionManagerRuntime, resolveLinuxSystemCaBundle };
@@ -308,6 +312,36 @@ export function buildNodeServiceEnvironment(params: {
     OPENCLAW_LOG_PREFIX: "node",
     OPENCLAW_SERVICE_MARKER: NODE_SERVICE_MARKER,
     OPENCLAW_SERVICE_KIND: NODE_SERVICE_KIND,
+    OPENCLAW_SERVICE_VERSION: VERSION,
+  };
+}
+
+export function buildWindowsCompanionServiceEnvironment(params: {
+  env: Record<string, string | undefined>;
+  platform?: NodeJS.Platform;
+  extraPathDirs?: string[];
+  execPath?: string;
+  shellAppLabel?: string;
+}): Record<string, string | undefined> {
+  const { env, extraPathDirs } = params;
+  const platform = params.platform ?? process.platform;
+  const sharedEnv = resolveSharedServiceEnvironmentFields(
+    env,
+    platform,
+    extraPathDirs,
+    params.execPath,
+  );
+  const profile = env.OPENCLAW_PROFILE;
+  const shellAppLabel = normalizeOptionalString(params.shellAppLabel) ?? env.OPENCLAW_WINDOWS_SHELL_APP_LABEL;
+  return {
+    ...buildCommonServiceEnvironment(env, sharedEnv),
+    OPENCLAW_PROFILE: profile,
+    OPENCLAW_WINDOWS_SHELL_APP_LABEL: shellAppLabel,
+    OPENCLAW_WINDOWS_TASK_NAME: resolveWindowsCompanionWindowsTaskName(profile),
+    OPENCLAW_TASK_SCRIPT_NAME: WINDOWS_COMPANION_WINDOWS_TASK_SCRIPT_NAME,
+    OPENCLAW_LOG_PREFIX: "windows-companion",
+    OPENCLAW_SERVICE_MARKER: WINDOWS_COMPANION_SERVICE_MARKER,
+    OPENCLAW_SERVICE_KIND: WINDOWS_COMPANION_SERVICE_KIND,
     OPENCLAW_SERVICE_VERSION: VERSION,
   };
 }

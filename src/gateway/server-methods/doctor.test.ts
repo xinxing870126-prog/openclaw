@@ -127,6 +127,30 @@ const expectEmbeddingErrorResponse = (respond: ReturnType<typeof vi.fn>, error: 
   );
 };
 
+async function writeSanjinShadowStatus(workspaceDir: string): Promise<void> {
+  const shadowPath = path.join(
+    workspaceDir,
+    "sanjin",
+    "memory",
+    "reports",
+    "dreaming_lane_shadow_status.json",
+  );
+  await fs.mkdir(path.dirname(shadowPath), { recursive: true });
+  await fs.writeFile(
+    shadowPath,
+    `${JSON.stringify(
+      {
+        source: "sanjin_shadow",
+        shadowMode: true,
+        nativeControlsEnabled: false,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf-8",
+  );
+}
+
 describe("doctor.memory.status", () => {
   beforeEach(() => {
     loadConfig.mockClear();
@@ -714,6 +738,62 @@ describe("doctor.memory.status", () => {
     } finally {
       readFileSpy.mockRestore();
       await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("doctor.memory native dreaming action guard", () => {
+  beforeEach(() => {
+    loadConfig.mockClear();
+    resolveDefaultAgentId.mockClear();
+    resolveAgentWorkspaceDir.mockReset().mockReturnValue("/tmp/openclaw");
+    getMemorySearchManager.mockReset();
+    previewGroundedRemMarkdown.mockReset();
+    writeBackfillDiaryEntries.mockReset();
+    removeBackfillDiaryEntries.mockReset();
+    removeGroundedShortTermCandidates.mockReset();
+  });
+
+  it("blocks backfill while Sanjin shadow mode is active", async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "doctor-memory-shadow-"));
+    resolveAgentWorkspaceDir.mockReturnValue(workspaceDir);
+    const respond = vi.fn();
+
+    try {
+      await writeSanjinShadowStatus(workspaceDir);
+      await invokeDoctorMemoryBackfillDreamDiary(respond);
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({
+          message: expect.stringContaining("Sanjin Dreaming Lane shadow mode is active"),
+        }),
+      );
+      expect(previewGroundedRemMarkdown).not.toHaveBeenCalled();
+      expect(writeBackfillDiaryEntries).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks grounded short-term reset while Sanjin shadow mode is active", async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "doctor-memory-shadow-"));
+    resolveAgentWorkspaceDir.mockReturnValue(workspaceDir);
+    const respond = vi.fn();
+
+    try {
+      await writeSanjinShadowStatus(workspaceDir);
+      await invokeDoctorMemoryResetGroundedShortTerm(respond);
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({
+          message: expect.stringContaining("Sanjin Dreaming Lane shadow mode is active"),
+        }),
+      );
+      expect(removeGroundedShortTermCandidates).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(workspaceDir, { recursive: true, force: true });
     }
   });
 });

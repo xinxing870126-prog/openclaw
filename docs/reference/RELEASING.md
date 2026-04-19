@@ -27,6 +27,8 @@ OpenClaw has three public release lanes:
 - `beta` means the current beta install target
 - Stable and stable correction releases publish to npm `beta` by default; release operators can target `latest` explicitly, or promote a vetted beta build later
 - Every OpenClaw release ships the npm package and macOS app together
+- Windows stable/beta releases also publish a signed MSI artifact on the GitHub release
+- Stable Windows releases also generate and publish a `winget` manifest that points at that signed MSI
 
 ## Release cadence
 
@@ -60,6 +62,9 @@ OpenClaw has three public release lanes:
   - public `macOS Release` is validation-only
   - real private mac publish must pass successful private mac
     `preflight_run_id` and `validate_run_id`
+  - public macOS validation now accepts `beta_gate_run_id` as an override, but
+    otherwise auto-resolves a matching desktop-shell beta gate by
+    `releaseTag + expectedSha`
   - the real publish paths promote prepared artifacts instead of rebuilding
     them again
 - For stable correction releases like `YYYY.M.D-N`, the post-publish verifier
@@ -79,6 +84,43 @@ OpenClaw has three public release lanes:
   - the packaged app must keep a non-debug bundle id, a non-empty Sparkle feed
     URL, and a `CFBundleVersion` at or above the canonical Sparkle build floor
     for that release version
+- Stable/beta Windows release readiness now also includes the signed MSI lane:
+  - the GitHub release must end up with `OpenClaw-<version>-windows-x64.msi`
+  - the MSI must pass Authenticode signing with a trusted timestamp
+  - the MSI must also pass a clean-room Windows install, repair, and uninstall verification run
+  - the Windows release handoff must resolve a matching successful desktop
+    shell beta gate, preferably by `releaseTag + expectedSha`
+  - the Windows release workflow fails closed when signing secrets are missing
+    or signature/install verification fails
+  - stable releases must also generate a stable-only `winget` manifest from the signed MSI metadata
+  - stable `winget` publication must fail closed when manifest generation or submission fails
+
+## Desktop shell beta gate reference
+
+Desktop platform release lanes now treat the desktop shell beta gate as a
+release-handoff precheck.
+
+- The workflow itself must already be published to the GitHub branch/repo where
+  operators intend to dispatch it. If the remote workflow page returns
+  `This workflow does not exist.`, push the local workflow first; no Windows
+  real-MSI beta evidence can be collected until the workflow exists on GitHub.
+- Run `Desktop Shell Beta Gate` first and, when possible, dispatch it with
+  `release_tag=<tag>`
+- For Windows trial closure, `Desktop Shell Beta Gate` can now either:
+  - download a real `windows-msi` artifact via `windows_msi_run_id`
+  - or build a real MSI directly on `windows-latest` before running the MSI
+    install and shell beta verifiers
+- Release lanes now try to auto-discover matching beta evidence in this order:
+  1. explicit `beta_gate_run_id`
+  2. `releaseTag + expectedSha + target`
+  3. `expectedSha + target`
+- Keep `beta_gate_run_id` for operator override only; it is no longer the
+  default path
+- If the referenced handoff verdict is `blocked`, the platform workflow may
+  continue validation/build steps but must not be treated as ready for trial
+  distribution
+- Windows and macOS still share the same beta-ready shell definition; only the
+  platform release mechanics differ
 
 ## NPM workflow inputs
 
