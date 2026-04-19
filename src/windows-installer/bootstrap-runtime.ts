@@ -21,6 +21,30 @@ async function main() {
       env: process.env,
     });
     if (!result.gateway.ok || (result.companion.attempted && !result.companion.ok)) {
+      console.error(
+        `[windows-installer-bootstrap] install bootstrap failed: ${JSON.stringify(
+          {
+            gateway: {
+              ok: result.gateway.ok,
+              code: result.gateway.code,
+              stdout: result.gateway.stdout,
+              stderr: result.gateway.stderr,
+            },
+            companion: {
+              attempted: result.companion.attempted,
+              ok: result.companion.ok,
+              skipped: result.companion.skipped,
+              code: result.companion.code,
+              stdout: result.companion.stdout,
+              stderr: result.companion.stderr,
+            },
+            repairHints: result.status.repairHints,
+            partialFailure: result.status.partialFailure,
+          },
+          null,
+          2,
+        )}`,
+      );
       process.exitCode = 1;
     }
     return;
@@ -31,6 +55,9 @@ async function main() {
       env: process.env,
     });
     if (!result.gatewayRemoved && !result.companionRemoved) {
+      console.error(
+        `[windows-installer-bootstrap] uninstall cleanup removed nothing: ${JSON.stringify(result, null, 2)}`,
+      );
       process.exitCode = 1;
     }
     return;

@@ -1102,19 +1102,76 @@ async function readWindowsMsiLogTail(params: {
   maxLines?: number;
 }): Promise<string | null> {
   try {
-    const raw = await fs.readFile(params.logPath, "utf8");
-    const normalized = raw.replace(/\r\n/g, "\n").trim();
+    const raw = await fs.readFile(params.logPath);
+    const normalized = decodeWindowsMsiLogBuffer(raw).trim();
     if (!normalized) {
       return null;
     }
-    const maxLines = Math.max(1, params.maxLines ?? 80);
-    return normalized
-      .split("\n")
-      .slice(-maxLines)
-      .join("\n");
+    return extractWindowsMsiDiagnosticExcerpt(normalized, {
+      maxLines: params.maxLines ?? 80,
+    });
   } catch {
     return null;
   }
+}
+
+function decodeWindowsMsiLogBuffer(buffer: Buffer): string {
+  if (buffer.length === 0) {
+    return "";
+  }
+  const hasUtf16LeBom = buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe;
+  let text: string;
+  if (hasUtf16LeBom) {
+    text = buffer.subarray(2).toString("utf16le");
+  } else {
+    let zeroOddBytes = 0;
+    for (let index = 1; index < buffer.length; index += 2) {
+      if (buffer[index] === 0) {
+        zeroOddBytes += 1;
+      }
+    }
+    const oddBytePairs = Math.floor(buffer.length / 2);
+    const looksUtf16Le = oddBytePairs > 0 && zeroOddBytes / oddBytePairs > 0.35;
+    text = looksUtf16Le ? buffer.toString("utf16le") : buffer.toString("utf8");
+  }
+  return text.replace(/\u0000/g, "").replace(/\r\n/g, "\n");
+}
+
+function extractWindowsMsiDiagnosticExcerpt(
+  text: string,
+  options: { maxLines?: number } = {},
+): string {
+  const maxLines = Math.max(1, options.maxLines ?? 80);
+  const lines = text
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line, index, values) => !(line === "" && values[index - 1] === ""));
+  const anchorPatterns = [
+    /Return value 3/i,
+    /CustomAction/i,
+    /Action (start|ended)/i,
+    /WixQuietExec/i,
+    /RunPostInstallBootstrap/i,
+    /RunPostUninstallCleanup/i,
+    /bootstrap-runtime/i,
+    /Product:\s*OpenClaw\s*--\s*Installation failed/i,
+    /MainEngineThread is returning 1603/i,
+  ];
+  let anchorIndex = -1;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (anchorPatterns.some((pattern) => pattern.test(lines[index] ?? ""))) {
+      anchorIndex = index;
+      break;
+    }
+  }
+  if (anchorIndex === -1) {
+    return lines.slice(-maxLines).join("\n");
+  }
+  const contextBefore = Math.min(Math.floor(maxLines / 3), anchorIndex);
+  const remaining = Math.max(0, maxLines - contextBefore - 1);
+  const start = Math.max(0, anchorIndex - contextBefore);
+  const end = Math.min(lines.length, anchorIndex + remaining + 1);
+  return lines.slice(start, end).join("\n");
 }
 
 async function runWindowsMsiSmokePhase(params: {
@@ -1330,14 +1387,38 @@ export function renderWindowsInstallerBootstrapScript(params: {
     ")",
     "$ErrorActionPreference = 'Stop'",
     `$installRoot = '${installRoot}'`,
+    "$bootstrapLog = Join-Path ([System.IO.Path]::GetTempPath()) (\"OpenClaw-bootstrap-\" + $Mode + \".log\")",
+    "function Write-BootstrapLog([string]$Message) {",
+    "  $line = \"[$((Get-Date).ToString('o'))] $Message\"",
+    "  Add-Content -Path $bootstrapLog -Value $line -Encoding utf8",
+    "  Write-Host $line",
+    "}",
+    "Set-Content -Path $bootstrapLog -Value \"[$((Get-Date).ToString('o'))] bootstrap mode=$Mode installRoot=$installRoot\" -Encoding utf8",
     buildNodePathClause(),
     "$runtime = Join-Path $installRoot 'dist\\windows-installer\\bootstrap-runtime.js'",
     "if (-not (Test-Path $runtime)) {",
-    "  Write-Error \"Missing bootstrap runtime: $runtime\"",
+    "  Write-BootstrapLog \"Missing bootstrap runtime: $runtime\"",
+    "  Write-Error \"Missing bootstrap runtime: $runtime (bootstrap log: $bootstrapLog)\"",
     "  exit 3",
     "}",
-    "& $node $runtime $Mode --install-root $installRoot",
-    "exit $LASTEXITCODE",
+    "Write-BootstrapLog \"Using node: $node\"",
+    "Write-BootstrapLog \"Using runtime: $runtime\"",
+    "try {",
+    "  & $node $runtime $Mode --install-root $installRoot *>&1 | Tee-Object -FilePath $bootstrapLog -Append",
+    "  $exitCode = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }",
+    "  Write-BootstrapLog \"bootstrap runtime exited with code $exitCode\"",
+    "  exit $exitCode",
+    "} catch {",
+    "  $message = ($_ | Out-String).Trim()",
+    "  if ($message) {",
+    "    Write-BootstrapLog \"bootstrap runtime threw: $message\"",
+    "    Write-Error \"$message (bootstrap log: $bootstrapLog)\"",
+    "  } else {",
+    "    Write-BootstrapLog \"bootstrap runtime threw an unknown error\"",
+    "    Write-Error \"Bootstrap runtime failed unexpectedly (bootstrap log: $bootstrapLog)\"",
+    "  }",
+    "  exit 90",
+    "}",
     "",
   ].join("\n");
 }

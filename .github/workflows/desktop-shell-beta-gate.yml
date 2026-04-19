@@ -251,7 +251,8 @@ jobs:
           for log_path in \
             "${RUNNER_TEMP}"/OpenClaw-*-install.log \
             "${RUNNER_TEMP}"/OpenClaw-*-repair.log \
-            "${RUNNER_TEMP}"/OpenClaw-*-uninstall.log
+            "${RUNNER_TEMP}"/OpenClaw-*-uninstall.log \
+            "${RUNNER_TEMP}"/OpenClaw-bootstrap-*.log
           do
             cp "$log_path" artifacts/beta/windows-msi-install-logs/
             copied=1
