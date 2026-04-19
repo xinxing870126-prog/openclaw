@@ -1494,17 +1494,17 @@ export function renderWindowsMsiSource(params: {
     '    <Feature Id="MainFeature" Title="OpenClaw" Level="1">',
     '      <ComponentGroupRef Id="MainFeatureComponents" />',
     "    </Feature>",
-    '    <SetProperty Id="RunPostInstallBootstrapCmd" Action="RunPostInstallBootstrapCmd" Value="&quot;[SystemFolder]WindowsPowerShell\\v1.0\\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;'
+    '    <SetProperty Id="RunPostInstallBootstrap" Action="SetRunPostInstallBootstrapCommandLine" Value="&quot;[SystemFolder]WindowsPowerShell\\v1.0\\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;'
       + xmlEscape(bootstrapScript)
       + '&quot; install" After="InstallFiles" Sequence="execute" Condition="NOT REMOVE~=&quot;ALL&quot;" />',
     '    <CustomAction Id="RunPostInstallBootstrap" BinaryRef="Wix4UtilCA_X86" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="yes" />',
-    '    <SetProperty Id="RunPostUninstallCleanupCmd" Action="RunPostUninstallCleanupCmd" Value="&quot;[SystemFolder]WindowsPowerShell\\v1.0\\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;'
+    '    <SetProperty Id="RunPostUninstallCleanup" Action="SetRunPostUninstallCleanupCommandLine" Value="&quot;[SystemFolder]WindowsPowerShell\\v1.0\\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;'
       + xmlEscape(bootstrapScript)
       + '&quot; uninstall" Before="RemoveFiles" Sequence="execute" Condition="REMOVE~=&quot;ALL&quot;" />',
     '    <CustomAction Id="RunPostUninstallCleanup" BinaryRef="Wix4UtilCA_X86" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="yes" />',
     "    <InstallExecuteSequence>",
-    '      <Custom Action="RunPostInstallBootstrap" After="RunPostInstallBootstrapCmd" />',
-    '      <Custom Action="RunPostUninstallCleanup" After="RunPostUninstallCleanupCmd" />',
+    '      <Custom Action="RunPostInstallBootstrap" After="SetRunPostInstallBootstrapCommandLine" />',
+    '      <Custom Action="RunPostUninstallCleanup" After="SetRunPostUninstallCleanupCommandLine" />',
     "    </InstallExecuteSequence>",
     "  </Package>",
     '  <Fragment>',
