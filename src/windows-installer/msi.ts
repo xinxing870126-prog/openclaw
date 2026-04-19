@@ -1224,6 +1224,16 @@ async function readWindowsMsiLogTail(params: {
   }
 }
 
+async function readWindowsMsiLogText(logPath: string): Promise<string | null> {
+  try {
+    const raw = await fs.readFile(logPath);
+    const normalized = decodeWindowsMsiLogBuffer(raw).trim();
+    return normalized || null;
+  } catch {
+    return null;
+  }
+}
+
 function decodeWindowsMsiLogBuffer(buffer: Buffer): string {
   if (buffer.length === 0) {
     return "";
@@ -1283,6 +1293,16 @@ function extractWindowsMsiDiagnosticExcerpt(
   return lines.slice(start, end).join("\n");
 }
 
+function windowsMsiUninstallLooksSuccessful(logText: string | null): boolean {
+  if (!logText) {
+    return false;
+  }
+  return (
+    /Windows Installer removed the product\./i.test(logText)
+    && /Removal success or error status:\s*1603\./i.test(logText)
+  );
+}
+
 async function runWindowsMsiSmokePhase(params: {
   phase: WindowsMsiSmokePhase;
   artifactPath: string;
@@ -1314,11 +1334,19 @@ async function runWindowsMsiSmokePhase(params: {
     },
   );
   if (msiexec.code !== 0) {
-    const logTail = await readWindowsMsiLogTail({ logPath });
-    throw new Error(
-      `Windows MSI ${params.phase} failed with code ${String(msiexec.code)}. Log: ${logPath}` +
-        (logTail ? `\n--- MSI log tail ---\n${logTail}` : ""),
-    );
+    const logText = await readWindowsMsiLogText(logPath);
+    const logTail = logText
+      ? extractWindowsMsiDiagnosticExcerpt(logText, { maxLines: 80 })
+      : null;
+    if (params.phase === "uninstall" && windowsMsiUninstallLooksSuccessful(logText)) {
+      // Some Windows runner uninstall passes still bubble up 1603 after the product
+      // has already been removed. Fall through to residual state checks before failing.
+    } else {
+      throw new Error(
+        `Windows MSI ${params.phase} failed with code ${String(msiexec.code)}. Log: ${logPath}` +
+          (logTail ? `\n--- MSI log tail ---\n${logTail}` : ""),
+      );
+    }
   }
 
   if (params.phase === "uninstall") {
@@ -2245,8 +2273,12 @@ export async function runWindowsMsiSmokeUninstall(params: {
     || installedProduct?.bootstrapStatus.gatewayInstalled
     || installedProduct?.bootstrapStatus.companionInstalled
   ) {
+    const installedProductSummary = summarizeWindowsInstalledProductStatus(installedProduct);
     throw new Error(
-      `Windows MSI uninstall verification failed. Log: ${result.logPath}`,
+      `Windows MSI uninstall verification failed. Log: ${result.logPath}` +
+        (installedProductSummary
+          ? `\n--- Installed product snapshot ---\n${JSON.stringify(installedProductSummary, null, 2)}`
+          : ""),
     );
   }
   return result;

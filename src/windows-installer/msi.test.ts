@@ -747,4 +747,67 @@ describe("windows MSI helpers", () => {
     expect(uninstallResult.phase).toBe("uninstall");
     expect(uninstallResult.installedProduct?.manifest).toBeNull();
   });
+
+  it("accepts uninstall 1603 when MSI reports the product was removed and no residual state remains", async () => {
+    await installer.saveWindowsInstallerManifest(
+      {
+        version: 1,
+        installMode: "msi",
+        productName: "OpenClaw",
+        productVersion: "2026.4.10",
+        architecture: "x64",
+        installRoot,
+        installedAt: "2026-04-18T00:00:00.000Z",
+        updatedAt: "2026-04-18T00:00:00.000Z",
+        companionEnabled: true,
+        gatewayBootstrapSucceeded: true,
+        companionBootstrapSucceeded: true,
+      },
+      process.env,
+    );
+    const logPath = path.join(installRoot, "OpenClaw-2026.4.10-windows-x64-uninstall.log");
+    await fs.writeFile(
+      logPath,
+      [
+        "Product: OpenClaw -- Removal failed.",
+        "Windows Installer removed the product. Product Name: OpenClaw. Product Version: 26.4.10. Product Language: 1033. Manufacturer: OpenClaw. Removal success or error status: 1603.",
+        "MainEngineThread is returning 1603",
+      ].join("\n"),
+      "utf8",
+    );
+    runCommandWithTimeout.mockResolvedValueOnce({
+      code: 1603,
+      stdout: "",
+      stderr: "",
+    });
+    readGatewayServiceState.mockResolvedValueOnce({
+      installed: false,
+      loaded: false,
+      running: false,
+      env: process.env,
+      command: null,
+      runtime: undefined,
+    });
+    resolveWindowsCompanionInstallerStatus.mockResolvedValueOnce({
+      selected: true,
+      configured: false,
+      installed: false,
+      loaded: false,
+      running: false,
+      installMode: null,
+      profile: null,
+      supervisorLabel: null,
+      config: null,
+    });
+    await installer.removeWindowsInstallerManifest(process.env);
+
+    const uninstallResult = await installer.runWindowsMsiSmokeUninstall({
+      artifactPath: path.join(installRoot, "OpenClaw-2026.4.10-windows-x64.msi"),
+      env: process.env,
+      logPath,
+    });
+
+    expect(uninstallResult.phase).toBe("uninstall");
+    expect(uninstallResult.installedProduct?.manifest).toBeNull();
+  });
 });
