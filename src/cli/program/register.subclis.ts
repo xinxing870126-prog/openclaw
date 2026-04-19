@@ -100,6 +100,11 @@ const entrySpecs: readonly CommandGroupDescriptorSpec<SubCliRegistrar>[] = [
       exportName: "registerNodeCli",
     },
     {
+      commandNames: ["windows-companion"],
+      loadModule: () => import("../windows-companion-cli.js"),
+      exportName: "registerWindowsCompanionCli",
+    },
+    {
       commandNames: ["sandbox"],
       loadModule: () => import("../sandbox-cli.js"),
       exportName: "registerSandboxCli",

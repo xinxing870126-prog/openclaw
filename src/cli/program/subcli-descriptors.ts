@@ -53,6 +53,11 @@ const subCliCommandCatalog = defineCommandDescriptorCatalog([
     hasSubcommands: true,
   },
   {
+    name: "windows-companion",
+    description: "Run and manage the Windows companion managed host",
+    hasSubcommands: true,
+  },
+  {
     name: "sandbox",
     description: "Manage sandbox containers for agent isolation",
     hasSubcommands: true,
