@@ -232,6 +232,7 @@ jobs:
             echo "Real Windows shell trial requires a Windows MSI artifact path."
             exit 1
           fi
+          mkdir -p artifacts/beta
           node --import tsx scripts/verify-windows-msi-install.ts \
             --artifact-path "$WINDOWS_MSI_PATH" \
             --timeout-ms 180000 \
