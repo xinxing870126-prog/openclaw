@@ -242,32 +242,51 @@ jobs:
 
       - name: Upload Windows MSI install logs on failure
         if: ${{ failure() }}
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
-          mkdir -p artifacts/beta/windows-msi-install-logs
-          shopt -s nullglob
-          copied=0
-          for log_path in \
-            "${RUNNER_TEMP}"/OpenClaw-*-install.log \
-            "${RUNNER_TEMP}"/OpenClaw-*-repair.log \
-            "${RUNNER_TEMP}"/OpenClaw-*-uninstall.log \
-            "${RUNNER_TEMP}"/OpenClaw-bootstrap-*.log
-          do
-            cp "$log_path" artifacts/beta/windows-msi-install-logs/
-            copied=1
-          done
-          if [ "$copied" -eq 0 ]; then
-            echo "No Windows MSI logs found under ${RUNNER_TEMP}."
+          $outputDir = Join-Path $PWD "artifacts/beta/windows-msi-install-logs"
+          New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+
+          $candidateDirs = @(
+            $env:RUNNER_TEMP,
+            $env:TEMP,
+            $env:TMP,
+            [System.IO.Path]::GetTempPath()
+          ) | Where-Object { $_ -and $_.Trim() -ne "" } | Select-Object -Unique
+
+          $patterns = @(
+            "OpenClaw-*-install.log",
+            "OpenClaw-*-repair.log",
+            "OpenClaw-*-uninstall.log",
+            "OpenClaw-bootstrap-*.log"
+          )
+
+          $copiedFiles = @()
+          foreach ($dir in $candidateDirs) {
+            if (-not (Test-Path -LiteralPath $dir)) {
+              continue
+            }
+            foreach ($pattern in $patterns) {
+              Get-ChildItem -Path $dir -Filter $pattern -File -ErrorAction SilentlyContinue | ForEach-Object {
+                $dest = Join-Path $outputDir $_.Name
+                Copy-Item -LiteralPath $_.FullName -Destination $dest -Force
+                $copiedFiles += $dest
+              }
+            }
+          }
+
+          if ($copiedFiles.Count -eq 0) {
+            Write-Host "No Windows MSI logs found under: $($candidateDirs -join ', ')"
             exit 0
-          fi
-          echo "Collected Windows MSI logs:"
-          ls -la artifacts/beta/windows-msi-install-logs
-          for log_path in artifacts/beta/windows-msi-install-logs/*.log; do
-            echo "::group::$(basename "$log_path") tail"
-            tail -n 120 "$log_path" || true
-            echo "::endgroup::"
-          done
+          }
+
+          Write-Host "Collected Windows MSI logs:"
+          Get-ChildItem -LiteralPath $outputDir | Format-Table Name,Length,LastWriteTime -AutoSize
+          foreach ($logPath in $copiedFiles | Sort-Object -Unique) {
+            Write-Host "::group::$([System.IO.Path]::GetFileName($logPath)) tail"
+            Get-Content -LiteralPath $logPath -Tail 120 -ErrorAction SilentlyContinue
+            Write-Host "::endgroup::"
+          }
 
       - name: Upload collected Windows MSI install logs on failure
         if: ${{ failure() }}
