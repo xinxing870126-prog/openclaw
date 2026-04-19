@@ -468,6 +468,25 @@ function resolveInstallRootVersion(
   return readPackageVersion(params.rootDir);
 }
 
+function resolveWindowsMsiPackageVersion(version: string): string {
+  const parsed = parseComparableSemver(version, { normalizeLegacyDotBeta: true });
+  const numericSegments =
+    version.match(/\d+/g)?.map((segment) => Number.parseInt(segment, 10)).filter(Number.isFinite) ?? [];
+
+  const rawMajor = parsed?.major ?? numericSegments[0] ?? 0;
+  const rawMinor = parsed?.minor ?? numericSegments[1] ?? 0;
+  const rawPatch = parsed?.patch ?? numericSegments[2] ?? 0;
+  const major =
+    rawMajor < 256
+      ? rawMajor
+      : rawMajor >= 2000 && rawMajor - 2000 < 256
+        ? rawMajor - 2000
+        : rawMajor % 256;
+  const minor = Math.min(Math.max(rawMinor, 0), 255);
+  const patch = Math.min(Math.max(rawPatch, 0), 65_535);
+  return `${major}.${minor}.${patch}`;
+}
+
 function resolveCommandSuccess(result: CliCommandResult): boolean {
   return result.code === 0;
 }
@@ -1584,9 +1603,10 @@ export function renderWindowsMsiSource(params: {
   const manufacturer = params.manufacturer ?? WINDOWS_MSI_PRODUCT_NAME;
   const upgradeCode = params.upgradeCode ?? WINDOWS_MSI_UPGRADE_CODE;
   const bootstrapScript = path.join(params.installRoot, "bootstrap", "msi-bootstrap.ps1");
+  const packageVersion = resolveWindowsMsiPackageVersion(params.version);
   return [
     '<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">',
-    `  <Package Name="${xmlEscape(productName)}" Manufacturer="${xmlEscape(manufacturer)}" Version="${xmlEscape(params.version)}" UpgradeCode="${xmlEscape(upgradeCode)}" Scope="perUser" InstallerVersion="500" Compressed="yes">`,
+    `  <Package Name="${xmlEscape(productName)}" Manufacturer="${xmlEscape(manufacturer)}" Version="${xmlEscape(packageVersion)}" UpgradeCode="${xmlEscape(upgradeCode)}" Scope="perUser" InstallerVersion="500" Compressed="yes">`,
     renderDirectoryFragment(params.fileEntries),
     '    <Feature Id="MainFeature" Title="OpenClaw" Level="1">',
     '      <ComponentGroupRef Id="MainFeatureComponents" />',

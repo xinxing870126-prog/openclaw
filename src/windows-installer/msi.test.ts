@@ -175,6 +175,7 @@ describe("windows MSI helpers", () => {
     expect(source).toContain("RunPostUninstallCleanup");
     expect(source).toContain("ComponentRef Id=");
     expect(source).toContain("bootstrap\\msi-bootstrap.ps1");
+    expect(source).toContain('Version="26.4.10"');
   });
 
   it("normalizes Windows MSI signature verification metadata", async () => {
