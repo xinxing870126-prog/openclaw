@@ -221,10 +221,13 @@ jobs:
           echo "WINDOWS_INSTALL_REPORT=$report_path" >> "$GITHUB_ENV"
 
       - name: Run Windows MSI install verification on runner
-        if: ${{ inputs.windows_install_verification_run_id == '' && inputs.windows_msi_run_id != '' }}
+        if: ${{ inputs.windows_install_verification_run_id == '' }}
         shell: bash
         run: |
           set -euo pipefail
+          if [ -n "${WINDOWS_INSTALL_REPORT:-}" ]; then
+            exit 0
+          fi
           if [ -z "${WINDOWS_MSI_PATH:-}" ]; then
             echo "Real Windows shell trial requires a Windows MSI artifact path."
             exit 1
