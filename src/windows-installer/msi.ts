@@ -1653,7 +1653,6 @@ export function renderWindowsMsiSource(params: {
   return [
     '<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">',
     `  <Package Name="${xmlEscape(productName)}" Manufacturer="${xmlEscape(manufacturer)}" Version="${xmlEscape(packageVersion)}" UpgradeCode="${xmlEscape(upgradeCode)}" Scope="perUser" InstallerVersion="500" Compressed="yes">`,
-    '    <MediaTemplate EmbedCab="yes" />',
     renderDirectoryFragment(params.fileEntries),
     '    <Feature Id="MainFeature" Title="OpenClaw" Level="1">',
     '      <ComponentGroupRef Id="MainFeatureComponents" />',

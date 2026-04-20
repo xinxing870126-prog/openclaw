@@ -173,7 +173,6 @@ describe("windows MSI helpers", () => {
 
     expect(source).toContain("RunPostInstallBootstrap");
     expect(source).toContain("RunPostUninstallCleanup");
-    expect(source).toContain('<MediaTemplate EmbedCab="yes" />');
     expect(source).toContain("ComponentRef Id=");
     expect(source).toContain("bootstrap\\msi-bootstrap.ps1");
     expect(source).toContain('Version="26.4.10"');

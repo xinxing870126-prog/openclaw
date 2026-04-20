@@ -176,7 +176,19 @@ jobs:
           if (-not $artifactPath) {
             throw "Failed to resolve Windows MSI artifact path from windows:msi:build."
           }
+          $artifactDir = Join-Path $PWD "artifacts\beta\windows-msi"
+          New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+          Copy-Item -Path $artifactPath -Destination $artifactDir -Force
+          $sourceDir = Split-Path -Parent $artifactPath
+          Get-ChildItem -Path $sourceDir -Filter "*.cab" -File | ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination $artifactDir -Force
+          }
+          $cabCount = (Get-ChildItem -Path $artifactDir -Filter "*.cab" -File | Measure-Object).Count
+          if ($cabCount -eq 0) {
+            Write-Warning "No external CAB files found next to $artifactPath. The MSI may be self-contained."
+          }
           "WINDOWS_MSI_PATH=$artifactPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "WINDOWS_MSI_ARTIFACT_DIR=$artifactDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Download Windows MSI artifact
         if: ${{ inputs.windows_msi_run_id != '' }}
@@ -330,7 +342,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: windows-msi
-          path: ${{ env.WINDOWS_MSI_PATH }}
+          path: ${{ env.WINDOWS_MSI_ARTIFACT_DIR || env.WINDOWS_MSI_PATH }}
           if-no-files-found: error
 
       - name: Upload Windows beta verdict artifact
