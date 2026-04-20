@@ -173,6 +173,7 @@ describe("windows MSI helpers", () => {
 
     expect(source).toContain("RunPostInstallBootstrap");
     expect(source).toContain("RunPostUninstallCleanup");
+    expect(source).toContain('<MediaTemplate EmbedCab="yes" />');
     expect(source).toContain("ComponentRef Id=");
     expect(source).toContain("bootstrap\\msi-bootstrap.ps1");
     expect(source).toContain('Version="26.4.10"');
@@ -390,26 +391,27 @@ describe("windows MSI helpers", () => {
   it("resolves the latest signed Windows MSI update from GitHub Releases", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify([
-            {
-              tag_name: "v2026.4.11",
-              prerelease: false,
-              draft: false,
-              html_url: "https://github.com/openclaw/openclaw/releases/tag/v2026.4.11",
-              published_at: "2026-04-19T00:00:00.000Z",
-              assets: [
-                {
-                  name: "OpenClaw-2026.4.11-windows-x64.msi",
-                  browser_download_url:
-                    "https://github.com/openclaw/openclaw/releases/download/v2026.4.11/OpenClaw-2026.4.11-windows-x64.msi",
-                },
-              ],
-            },
-          ]),
-          { status: 200 },
-        ),
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify([
+              {
+                tag_name: "v2026.4.11",
+                prerelease: false,
+                draft: false,
+                html_url: "https://github.com/openclaw/openclaw/releases/tag/v2026.4.11",
+                published_at: "2026-04-19T00:00:00.000Z",
+                assets: [
+                  {
+                    name: "OpenClaw-2026.4.11-windows-x64.msi",
+                    browser_download_url:
+                      "https://github.com/openclaw/openclaw/releases/download/v2026.4.11/OpenClaw-2026.4.11-windows-x64.msi",
+                  },
+                ],
+              },
+            ]),
+            { status: 200 },
+          ),
       ) as typeof globalThis.fetch,
     );
 
@@ -541,27 +543,28 @@ describe("windows MSI helpers", () => {
     await fs.writeFile(artifactPath, "fake-msi-payload", "utf8");
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify([
-            {
-              tag_name: "v2026.4.10",
-              prerelease: false,
-              draft: false,
-              html_url: "https://github.com/openclaw/openclaw/releases/tag/v2026.4.10",
-              body: "Stable Windows release.",
-              published_at: "2026-04-18T00:00:00.000Z",
-              assets: [
-                {
-                  name: "OpenClaw-2026.4.10-windows-x64.msi",
-                  browser_download_url:
-                    "https://github.com/openclaw/openclaw/releases/download/v2026.4.10/OpenClaw-2026.4.10-windows-x64.msi",
-                },
-              ],
-            },
-          ]),
-          { status: 200 },
-        ),
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify([
+              {
+                tag_name: "v2026.4.10",
+                prerelease: false,
+                draft: false,
+                html_url: "https://github.com/openclaw/openclaw/releases/tag/v2026.4.10",
+                body: "Stable Windows release.",
+                published_at: "2026-04-18T00:00:00.000Z",
+                assets: [
+                  {
+                    name: "OpenClaw-2026.4.10-windows-x64.msi",
+                    browser_download_url:
+                      "https://github.com/openclaw/openclaw/releases/download/v2026.4.10/OpenClaw-2026.4.10-windows-x64.msi",
+                  },
+                ],
+              },
+            ]),
+            { status: 200 },
+          ),
       ) as typeof globalThis.fetch,
     );
 
