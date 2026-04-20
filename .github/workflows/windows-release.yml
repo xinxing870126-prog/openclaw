@@ -1,0 +1,360 @@
+name: Windows MSI Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing GitHub release tag to attach the signed MSI to
+        required: false
+        type: string
+      release_channel:
+        description: Release channel for metadata when manually dispatching
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - stable
+          - beta
+          - manual
+      beta_gate_run_id:
+        description: Successful Desktop Shell Beta Gate workflow run id to use for release handoff evidence
+        required: false
+        type: string
+      beta_gate_required:
+        description: Require beta gate evidence before distribution handoff
+        required: false
+        default: true
+        type: boolean
+  release:
+    types: [published]
+
+permissions:
+  actions: read
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  NODE_VERSION: "24.x"
+  PNPM_VERSION: "10.32.1"
+
+jobs:
+  build_windows_msi:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          install-bun: "false"
+          use-sticky-disk: "false"
+
+      - name: Setup WiX Toolset
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.*
+          wix extension add WixToolset.Util.wixext
+
+      - name: Resolve release context
+        id: release_context
+        shell: pwsh
+        run: |
+          $tag = ""
+          if ("${{ github.event_name }}" -eq "release") {
+            $tag = "${{ github.event.release.tag_name }}"
+          } elseif ("${{ inputs.release_tag }}" -ne "") {
+            $tag = "${{ inputs.release_tag }}"
+          }
+          $channel = "${{ inputs.release_channel }}"
+          if ($tag -match "-beta\.") {
+            $channel = "beta"
+          } elseif ($channel -eq "" -or $channel -eq "auto") {
+            if ($tag) {
+              $channel = "stable"
+            } else {
+              $channel = "manual"
+            }
+          }
+          "release_tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "release_channel=$channel" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Resolve beta gate policy
+        id: beta_gate_policy
+        shell: pwsh
+        run: |
+          $channel = "${{ steps.release_context.outputs.release_channel }}"
+          $required = "${{ inputs.beta_gate_required }}"
+          if ($channel -eq "manual") {
+            $required = "false"
+          } elseif ($required -eq "") {
+            $required = "true"
+          }
+          $target = "controlled_beta"
+          if ($channel -eq "stable") {
+            $target = "release_handoff"
+          }
+          "required=$required" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "target=$target" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Resolve desktop shell beta handoff
+        id: beta_gate_reference
+        shell: pwsh
+        run: |
+          $reportPath = Join-Path $env:RUNNER_TEMP "desktop-shell-beta-release-reference.json"
+          $args = @(
+            "--repo", "${{ github.repository }}",
+            "--target", "${{ steps.beta_gate_policy.outputs.target }}",
+            "--expected-sha", "${{ github.sha }}",
+            "--report-json", $reportPath
+          )
+          if ("${{ inputs.beta_gate_run_id }}" -ne "") {
+            $args += @("--run-id", "${{ inputs.beta_gate_run_id }}")
+          } elseif ("${{ steps.release_context.outputs.release_tag }}" -ne "") {
+            $args += @("--release-tag", "${{ steps.release_context.outputs.release_tag }}")
+          }
+          $json = node --import tsx scripts/resolve-desktop-shell-beta-handoff.ts @args
+          $json | Out-File -FilePath "$env:RUNNER_TEMP\desktop-shell-beta-release-reference.stdout.json" -Encoding utf8
+          $status = node -e "const fs=require('node:fs'); const parsed=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); process.stdout.write(parsed.status);" $reportPath
+          $target = node -e "const fs=require('node:fs'); const parsed=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); process.stdout.write(parsed.target);" $reportPath
+          $gateReached = node -e "const fs=require('node:fs'); const parsed=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); process.stdout.write(String(parsed.gateReached));" $reportPath
+          $selectionMode = node -e "const fs=require('node:fs'); const parsed=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); process.stdout.write(parsed.selectionMode || 'none');" $reportPath
+          $artifactRunId = node -e "const fs=require('node:fs'); const parsed=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); process.stdout.write(parsed.artifactRunId || '');" $reportPath
+          $bindingReleaseTag = node -e "const fs=require('node:fs'); const parsed=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); process.stdout.write(parsed.bindingReleaseTag || '');" $reportPath
+          $bindingExpectedSha = node -e "const fs=require('node:fs'); const parsed=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); process.stdout.write(parsed.bindingExpectedSha || '');" $reportPath
+          "report_path=$reportPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "status=$status" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "target=$target" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "gate_reached=$gateReached" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "selection_mode=$selectionMode" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "artifact_run_id=$artifactRunId" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "binding_release_tag=$bindingReleaseTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "binding_expected_sha=$bindingExpectedSha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Summarize beta gate handoff posture
+        shell: pwsh
+        run: |
+          $reportPath = "${{ steps.beta_gate_reference.outputs.report_path }}"
+          $json = Get-Content $reportPath -Raw | ConvertFrom-Json
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Desktop shell beta gate"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- required: ${{ steps.beta_gate_policy.outputs.required }}"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- target: $($json.target)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- status: $($json.status)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- gate reached: $($json.gateReached)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- selection mode: $($json.selectionMode)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- artifact run id: $($json.artifactRunId)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- binding release tag: $($json.bindingReleaseTag)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- binding expected sha: $($json.bindingExpectedSha)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- release channel: ${{ steps.release_context.outputs.release_channel }}"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Notes:"
+          if ($json.notes.Count -gt 0) {
+            foreach ($note in $json.notes) {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- $note"
+            }
+          } else {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- none"
+          }
+
+      - name: Validate Windows signing secrets
+        shell: pwsh
+        run: |
+          if ("${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}" -eq "") {
+            throw "Missing required secret WINDOWS_SIGNING_PFX_BASE64."
+          }
+          if ("${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}" -eq "") {
+            throw "Missing required secret WINDOWS_SIGNING_PFX_PASSWORD."
+          }
+
+      - name: Build runtime + UI
+        run: |
+          pnpm build
+          pnpm ui:build
+
+      - name: Build Windows MSI
+        id: build_msi
+        shell: pwsh
+        run: |
+          $json = pnpm windows:msi:build
+          $json | Out-File -FilePath "$env:RUNNER_TEMP\windows-msi.json" -Encoding utf8
+          $artifactPath = node -e "const fs=require('node:fs'); const parsed=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); process.stdout.write(parsed.artifactPath);" "$env:RUNNER_TEMP\windows-msi.json"
+          $artifactName = node -e "const fs=require('node:fs'); const parsed=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); process.stdout.write(parsed.artifactName);" "$env:RUNNER_TEMP\windows-msi.json"
+          $version = node -e "const fs=require('node:fs'); const parsed=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); process.stdout.write(parsed.version);" "$env:RUNNER_TEMP\windows-msi.json"
+          "artifact_path=$artifactPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "artifact_name=$artifactName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Materialize signing certificate
+        shell: pwsh
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP "openclaw-release-signing.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String("${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}"))
+          "pfx_path=$pfxPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+        id: signing_cert
+
+      - name: Sign Windows MSI artifact
+        id: sign_msi
+        shell: pwsh
+        run: |
+          $args = @(
+            "--artifact-path", "${{ steps.build_msi.outputs.artifact_path }}",
+            "--version", "${{ steps.build_msi.outputs.version }}",
+            "--release-channel", "${{ steps.release_context.outputs.release_channel }}",
+            "--pfx-path", "${{ steps.signing_cert.outputs.pfx_path }}",
+            "--pfx-password", "${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}"
+          )
+          if ("${{ secrets.WINDOWS_SIGNING_CERT_SUBJECT }}" -ne "") {
+            $args += @("--cert-subject", "${{ secrets.WINDOWS_SIGNING_CERT_SUBJECT }}")
+          }
+          $json = node --import tsx scripts/sign-windows-msi.ts @args
+          $json | Out-File -FilePath "$env:RUNNER_TEMP\windows-msi-signed.json" -Encoding utf8
+
+      - name: Verify signed MSI metadata
+        id: verify_msi
+        shell: pwsh
+        run: |
+          $args = @(
+            "--artifact-path", "${{ steps.build_msi.outputs.artifact_path }}",
+            "--version", "${{ steps.build_msi.outputs.version }}",
+            "--release-channel", "${{ steps.release_context.outputs.release_channel }}"
+          )
+          if ("${{ secrets.WINDOWS_SIGNING_CERT_SUBJECT }}" -ne "") {
+            $args += @("--expected-signer-subject", "${{ secrets.WINDOWS_SIGNING_CERT_SUBJECT }}")
+          }
+          $json = node --import tsx scripts/resolve-windows-release-metadata.ts @args
+          $json | Out-File -FilePath "$env:RUNNER_TEMP\windows-msi-release-metadata.json" -Encoding utf8
+          $signed = node -e "const fs=require('node:fs'); const parsed=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); process.stdout.write(String(parsed.signed));" "$env:RUNNER_TEMP\windows-msi-release-metadata.json"
+          $signer = node -e "const fs=require('node:fs'); const parsed=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); process.stdout.write(parsed.signerSubject || '');" "$env:RUNNER_TEMP\windows-msi-release-metadata.json"
+          $timestamp = node -e "const fs=require('node:fs'); const parsed=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); process.stdout.write(parsed.timestampStatus || 'unknown');" "$env:RUNNER_TEMP\windows-msi-release-metadata.json"
+          $status = node -e "const fs=require('node:fs'); const parsed=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); process.stdout.write(parsed.verificationStatus || 'Unknown');" "$env:RUNNER_TEMP\windows-msi-release-metadata.json"
+          if ($signed -ne "true") {
+            throw "Signed Windows MSI verification failed: signed=$signed status=$status signer=$signer timestamp=$timestamp"
+          }
+          if ($timestamp -ne "present") {
+            throw "Signed Windows MSI is missing a trusted timestamp: timestampStatus=$timestamp"
+          }
+          "signed=$signed" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "signer_subject=$signer" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "timestamp_status=$timestamp" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "verification_status=$status" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Clean-room verify MSI install / repair / uninstall
+        id: verify_install
+        shell: pwsh
+        run: |
+          $json = node --import tsx scripts/verify-windows-msi-install.ts `
+            --artifact-path "${{ steps.build_msi.outputs.artifact_path }}" `
+            --timeout-ms 180000 `
+            --retry-attempts 15 `
+            --retry-delay-ms 2000
+          $json | Out-File -FilePath "$env:RUNNER_TEMP\windows-msi-install-verification.json" -Encoding utf8
+
+      - name: Upload Windows MSI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-msi
+          path: ${{ steps.build_msi.outputs.artifact_path }}
+          if-no-files-found: error
+
+      - name: Upload Windows MSI release metadata
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-msi-release-metadata
+          path: ${{ runner.temp }}\windows-msi-release-metadata.json
+          if-no-files-found: error
+
+      - name: Upload Windows MSI install verification metadata
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-msi-install-verification
+          path: ${{ runner.temp }}\windows-msi-install-verification.json
+          if-no-files-found: error
+
+      - name: Upload desktop shell beta release reference
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-desktop-shell-beta-release-reference
+          path: ${{ steps.beta_gate_reference.outputs.report_path }}
+          if-no-files-found: error
+
+      - name: Attach signed MSI to GitHub Release
+        if: ${{ (github.event_name == 'release' || inputs.release_tag != '') && (steps.beta_gate_policy.outputs.required != 'true' || steps.beta_gate_reference.outputs.gate_reached == 'true') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_context.outputs.release_tag }}
+          files: ${{ steps.build_msi.outputs.artifact_path }}
+          fail_on_unmatched_files: true
+          overwrite_files: true
+
+      - name: Validate winget publishing secrets
+        if: ${{ steps.release_context.outputs.release_channel == 'stable' && steps.release_context.outputs.release_tag != '' && (steps.beta_gate_policy.outputs.required != 'true' || steps.beta_gate_reference.outputs.gate_reached == 'true') }}
+        shell: pwsh
+        run: |
+          if ("${{ secrets.WINGET_PKGS_TOKEN }}" -eq "") {
+            throw "Missing required secret WINGET_PKGS_TOKEN for stable winget publication."
+          }
+          if ("${{ secrets.WINGET_PKGS_FORK_REPO }}" -eq "") {
+            throw "Missing required secret WINGET_PKGS_FORK_REPO for stable winget publication."
+          }
+
+      - name: Build stable winget manifest set
+        if: ${{ steps.release_context.outputs.release_channel == 'stable' && steps.release_context.outputs.release_tag != '' && (steps.beta_gate_policy.outputs.required != 'true' || steps.beta_gate_reference.outputs.gate_reached == 'true') }}
+        id: build_winget
+        shell: pwsh
+        run: |
+          $args = @(
+            "--artifact-path", "${{ steps.build_msi.outputs.artifact_path }}",
+            "--version", "${{ steps.build_msi.outputs.version }}",
+            "--release-channel", "stable"
+          )
+          if ("${{ secrets.WINDOWS_SIGNING_CERT_SUBJECT }}" -ne "") {
+            $args += @("--expected-signer-subject", "${{ secrets.WINDOWS_SIGNING_CERT_SUBJECT }}")
+          }
+          $json = pnpm windows:winget:build @args
+          $json | Out-File -FilePath "$env:RUNNER_TEMP\windows-winget-manifest.json" -Encoding utf8
+          $directoryPath = node -e "const fs=require('node:fs'); const parsed=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); process.stdout.write(parsed.directoryPath);" "$env:RUNNER_TEMP\windows-winget-manifest.json"
+          "directory_path=$directoryPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Upload winget manifest artifact
+        if: ${{ steps.release_context.outputs.release_channel == 'stable' && steps.release_context.outputs.release_tag != '' && (steps.beta_gate_policy.outputs.required != 'true' || steps.beta_gate_reference.outputs.gate_reached == 'true') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-winget-manifest
+          path: ${{ steps.build_winget.outputs.directory_path }}
+          if-no-files-found: error
+
+      - name: Publish stable winget manifest
+        if: ${{ steps.release_context.outputs.release_channel == 'stable' && steps.release_context.outputs.release_tag != '' && (steps.beta_gate_policy.outputs.required != 'true' || steps.beta_gate_reference.outputs.gate_reached == 'true') }}
+        id: publish_winget
+        shell: pwsh
+        run: |
+          $args = @(
+            "--artifact-path", "${{ steps.build_msi.outputs.artifact_path }}",
+            "--version", "${{ steps.build_msi.outputs.version }}",
+            "--release-channel", "stable",
+            "--fork-repo", "${{ secrets.WINGET_PKGS_FORK_REPO }}",
+            "--github-token", "${{ secrets.WINGET_PKGS_TOKEN }}"
+          )
+          if ("${{ secrets.WINDOWS_SIGNING_CERT_SUBJECT }}" -ne "") {
+            $args += @("--expected-signer-subject", "${{ secrets.WINDOWS_SIGNING_CERT_SUBJECT }}")
+          }
+          if ("${{ secrets.WINGET_PKGS_TARGET_REPO }}" -ne "") {
+            $args += @("--target-repo", "${{ secrets.WINGET_PKGS_TARGET_REPO }}")
+          }
+          if ("${{ secrets.WINGET_PKGS_BASE_BRANCH }}" -ne "") {
+            $args += @("--base-branch", "${{ secrets.WINGET_PKGS_BASE_BRANCH }}")
+          }
+          $json = pnpm windows:winget:publish @args
+          $json | Out-File -FilePath "$env:RUNNER_TEMP\windows-winget-publish.json" -Encoding utf8
+
+      - name: Upload winget publish metadata
+        if: ${{ steps.release_context.outputs.release_channel == 'stable' && steps.release_context.outputs.release_tag != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-winget-publish
+          path: ${{ runner.temp }}\windows-winget-publish.json
+          if-no-files-found: error
