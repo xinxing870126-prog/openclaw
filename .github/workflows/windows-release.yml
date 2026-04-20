@@ -56,8 +56,9 @@ jobs:
       - name: Setup WiX Toolset
         shell: pwsh
         run: |
-          dotnet tool install --global wix --version 5.*
-          wix extension add WixToolset.Util.wixext
+          $wixVersion = "5.0.2"
+          dotnet tool install --global wix --version $wixVersion
+          wix extension add "WixToolset.Util.wixext/$wixVersion"
 
       - name: Resolve release context
         id: release_context
